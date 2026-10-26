@@ -48,6 +48,26 @@ fn cell_from_input(input: &str, style: StyleId) -> Cell {
     cell
 }
 
+/// One `command.batch` run against a workbook held by the shim: the engine's own `run_batch`, each step run by the session.
+struct Headless(gridcraft_engine::Session);
+
+impl gridcraft_engine::host_commands::BatchHost for Headless {
+    fn session(&mut self) -> &mut gridcraft_engine::Session {
+        &mut self.0
+    }
+
+    fn step(&mut self, name: &str, args: Value) -> Result<Value, String> {
+        let outcome = self.0.run(name, args);
+        // A command in the list never opens a dialog; if it does, it is refused, as in the browser window.
+        if self.0.take_ui_requests().iter().any(|q| matches!(q, gridcraft_engine::UiRequest::Dialog(..))) {
+            return Err("it needed a dialog".into());
+        }
+        outcome
+    }
+
+    fn settled(&mut self) {}
+}
+
 #[wasm_bindgen]
 pub struct Window {
     shim: Shim,
@@ -180,6 +200,41 @@ impl Window {
     /// What the workbook shows of what the shim shares, as one comparable JSON string.
     pub fn digest(&self) -> String {
         digest(&self.wb).to_string()
+    }
+
+    // ── the assistant's run, and the file ─────────────────────────────────────────────────────────────────────────
+
+    /// A `craft:command {method: "command.batch"}` run: the engine's `run_batch` over the workbook this window shows (the same
+    /// function the browser window answers with). Answers the result JSON; an error is the refusal text (`command-not-allowed: ...`).
+    /// What the run changed is in the workbook after it, so a following `flush` sends the shared part (cells, structure, styles);
+    /// charts, PivotTables and names are the workbook's own and ride the file.
+    pub fn command_batch(&mut self, params_json: &str) -> Result<String, JsError> {
+        let params: Value = serde_json::from_str(params_json).map_err(|e| JsError::new(&format!("params: {e}")))?;
+        let mut session = gridcraft_engine::Session::new();
+        session.add_document(gridcraft_engine::DocState::new(self.wb.clone(), None, "Book".into(), gridcraft_engine::Trust::Local));
+        let mut host = Headless(session);
+        let outcome = gridcraft_engine::host_commands::run_batch(&mut host, &params);
+        if let Some(doc) = host.0.active() {
+            self.wb = (*doc.wb).clone();
+        }
+        let (result, _label) = outcome.map_err(|e| JsError::new(&e))?;
+        Ok(result.to_string())
+    }
+
+    /// The workbook as an .xlsx file (base64), as Save would write it.
+    pub fn file_b64(&mut self) -> Result<String, JsError> {
+        let mut session = gridcraft_engine::Session::new();
+        session.add_document(gridcraft_engine::DocState::new(self.wb.clone(), None, "Book".into(), gridcraft_engine::Trust::Local));
+        let out = session.run("file.saveBytes", json!({"format": "xlsx"})).map_err(|e| JsError::new(&e))?;
+        Ok(out.get("base64").and_then(Value::as_str).unwrap_or_default().to_owned())
+    }
+
+    /// Open an .xlsx file (base64) as this window's workbook, as Open does.
+    pub fn open_b64(&mut self, b64: &str) -> Result<(), JsError> {
+        let bytes = gridcraft_engine::io::base64_decode(b64).ok_or_else(|| JsError::new("invalid base64"))?;
+        let (wb, _notes) = gridcraft_engine::io::open_bytes("Book.xlsx", &bytes).map_err(err)?;
+        self.wb = wb;
+        Ok(())
     }
 
     // ── editing, as a person does ─────────────────────────────────────────────────────────────────────────────────

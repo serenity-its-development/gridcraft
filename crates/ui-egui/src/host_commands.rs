@@ -11,88 +11,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::SheetApp;
 
-/// Commands the assistant may run. Each acts at once on the workbook (no dialog, no file picker, no pointer gesture), and
-/// none is Undo or Redo: undoing a run is the person's. The target of each is its own `range`/`cell`/`sheet` argument or,
-/// when it has none, the selection.
-pub const ASSISTANT_COMMANDS: &[&str] = &[
-    // Content.
-    "cell.set",
-    "range.setValues",
-    "range.fill",
-    "edit.clearContents",
-    "edit.clearFormats",
-    "edit.fillDown",
-    "edit.fillUp",
-    "edit.fillLeft",
-    "edit.fillRight",
-    "data.sortAscending",
-    "data.sortDescending",
-    // Format.
-    "home.bold",
-    "home.italic",
-    "home.strikethrough",
-    "home.alignLeft",
-    "home.alignCenter",
-    "home.alignRight",
-    "home.alignTop",
-    "home.alignMiddle",
-    "home.alignBottom",
-    "home.wrapText",
-    "home.fillColor",
-    "home.fontName",
-    "home.fontSize",
-    "home.percent",
-    "home.comma",
-    "home.accounting",
-    "home.increaseDecimal",
-    "home.decreaseDecimal",
-    "home.mergeCells",
-    "home.unmergeCells",
-    "home.autofitColumnWidth",
-    "home.autofitRowHeight",
-    // Structure.
-    "home.insertColumns",
-    "home.deleteColumns",
-    "home.insertRows",
-    "home.deleteRows",
-    "home.hideColumns",
-    "home.hideRows",
-    "home.insertSheet",
-    "home.deleteSheet",
-    "sheet.rename",
-    "sheet.tabColor",
-    "view.freezeTopRow",
-    "view.freezeFirstColumn",
-    "view.unfreezePanes",
-    // Notes.
-    "review.newNote",
-];
-
-/// Commands that only look or move the window (they change nothing a save would keep, or only what the person sees).
-pub const ARGUMENT_COMMANDS: &[&str] = &[
-    // {range: "B2:D9"} or {cell}: where the commands without a target act.
-    "selection.set",
-    // {sheet: "Sales"} (a name or an index).
-    "sheet.activate",
-    // Read-only: a cell's value, formula, display text and style.
-    "cell.get",
-    // Read-only: the values of a range.
-    "sheet.read",
-    // Read-only: the workbook's sheets, selection, names, tables, charts and history.
-    "document.inspect",
-];
-
-/// Every command id a run may name, in the order the host's registry declares them.
-pub fn allowed() -> Vec<&'static str> {
-    ASSISTANT_COMMANDS.iter().chain(ARGUMENT_COMMANDS).copied().collect()
-}
-
-const MAX_STEPS: usize = 50;
-const MAX_LABEL: usize = 120;
+pub use gridcraft_engine::host_commands::{ARGUMENT_COMMANDS, ASSISTANT_COMMANDS, allowed};
 
 /// One relayed run: the host's request id and its `command.batch` params.
 pub struct HostRun {
@@ -123,72 +46,33 @@ impl SheetApp {
         }
     }
 
-    /// One `command.batch`: all of it, as ONE undo step, or none of it.
+    /// One `command.batch`: all of it, as ONE undo step, or none of it (the engine's `run_batch`, with this window's steps).
     pub fn run_command_batch(&mut self, params: &Value) -> Result<Value, String> {
-        let label = params.get("label").and_then(Value::as_str).map(str::trim).unwrap_or("");
-        if label.chars().count() > MAX_LABEL {
-            return Err(format!("label-too-long: a run's label is at most {MAX_LABEL} characters"));
+        let (result, label) = gridcraft_engine::host_commands::run_batch(self, params)?;
+        if label.is_some() {
+            self.host_label = label;
         }
-        let steps = params.get("steps").and_then(Value::as_array).ok_or("run-empty: a run states its steps")?;
-        if steps.is_empty() {
-            return Err("run-empty: a run states at least one command".into());
-        }
-        if steps.len() > MAX_STEPS {
-            return Err(format!("run-too-long: a run is at most {MAX_STEPS} steps"));
-        }
-        // Judge the whole run first; nothing has run when one id is outside the list.
-        let mut named = Vec::with_capacity(steps.len());
-        for step in steps {
-            let name = step.get("name").and_then(Value::as_str).unwrap_or("");
-            if !ASSISTANT_COMMANDS.contains(&name) && !ARGUMENT_COMMANDS.contains(&name) {
-                return Err(format!("command-not-allowed: Sheets does not allow the command '{name}' -- nothing was run"));
-            }
-            named.push((name, step.get("args").cloned().unwrap_or_else(|| json!({}))));
-        }
-        if self.session.active().is_none() {
-            return Err("no-document: no workbook is open in this window".into());
-        }
-        let label = if label.is_empty() { "Assistant" } else { label };
-        let token = self.session.group_begin(label).map_err(|e| format!("no-document: {e}"))?;
-        let mut results = Vec::with_capacity(named.len());
-        for (i, (name, args)) in named.iter().enumerate() {
-            let before = self.dialog.is_some();
-            let outcome = self.run(name, args.clone());
-            if !before && self.dialog.is_some() {
-                // A command in the list never opens one; if it does, the dialog must not sit over the person's work.
-                self.dialog = None;
-                let _ = self.session.group_rollback(token);
-                self.after_engine();
-                return Err(format!("step-failed: step {} ({name}): it needed a dialog -- nothing was changed", i + 1));
-            }
-            match outcome {
-                Ok(result) => results.push(json!({ "name": name, "result": result })),
-                Err(e) => {
-                    let _ = self.session.group_rollback(token);
-                    self.after_engine();
-                    return Err(format!("step-failed: step {} ({name}): {e} -- nothing was changed", i + 1));
-                }
-            }
-        }
-        let changed = self.session.group_end(token).unwrap_or(false);
-        self.after_engine();
-        if changed {
-            self.host_label = Some(label.to_owned());
-        }
-        Ok(json!({ "steps": results, "edits": usize::from(changed) }))
+        Ok(result)
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+impl gridcraft_engine::host_commands::BatchHost for SheetApp {
+    fn session(&mut self) -> &mut gridcraft_engine::Session {
+        &mut self.session
+    }
 
-    #[test]
-    fn every_listed_command_is_a_real_one_and_none_reaches_a_file() {
-        for id in allowed() {
-            assert!(gridcraft_engine::find_command(id).is_some(), "{id} is not an engine command");
-            assert!(!id.starts_with("file.") && !id.contains("open") && !id.contains("save") && !id.contains("export"), "{id} reaches a file");
+    fn step(&mut self, name: &str, args: Value) -> Result<Value, String> {
+        let before = self.dialog.is_some();
+        let outcome = self.run(name, args);
+        if !before && self.dialog.is_some() {
+            // A command in the list never opens one; if it does, the dialog must not sit over the person's work.
+            self.dialog = None;
+            return Err("it needed a dialog".into());
         }
-        assert!(!allowed().contains(&"edit.undo") && !allowed().contains(&"edit.redo"));
+        outcome
+    }
+
+    fn settled(&mut self) {
+        self.after_engine();
     }
 }

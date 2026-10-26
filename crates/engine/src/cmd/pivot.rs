@@ -880,7 +880,7 @@ fn summarize_table(s: &mut Session, p: &Json) -> Result<Json> {
 
 // ---------------------------------------------------------------- queries
 
-fn pivot_json(wb: &Workbook, si: usize, pt: &PivotTable) -> Json {
+pub(super) fn pivot_json(wb: &Workbook, si: usize, pt: &PivotTable) -> Json {
     json!({
         "id": pt.id,
         "name": pt.name,

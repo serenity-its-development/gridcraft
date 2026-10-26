@@ -66,6 +66,7 @@ mod page_setup_margins;
 mod paste_names;
 mod paste_special_dialog;
 mod pivot_pane;
+mod host_batch_objects;
 mod pivot_show_details;
 mod pivot_show_details_menu;
 mod popup_dismissal;

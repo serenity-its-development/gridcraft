@@ -37,7 +37,8 @@ fn inspect(s: &mut Session, _: &Json) -> Result<Json> {
     let sheets: Vec<Json> = wb
         .sheets
         .iter()
-        .map(|sh| {
+        .enumerate()
+        .map(|(si, sh)| {
             json!({
                 "name": sh.name,
                 "visibility": format!("{:?}", sh.visibility),
@@ -47,6 +48,7 @@ fn inspect(s: &mut Session, _: &Json) -> Result<Json> {
                 "merges": sh.merges.iter().map(|m| m.a1()).collect::<Vec<_>>(),
                 "tables": sh.tables.iter().map(|t| json!({"name": t.name, "range": t.range.a1(), "style": t.style, "totals": t.totals_row, "columns": t.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>(),
                 "charts": sh.charts.iter().map(|c| json!({"id": c.id, "kind": format!("{:?}", c.kind), "title": c.title, "at": c.anchor.cell.a1(), "series": c.series.len(), "trendlines": c.series.iter().flat_map(|s| s.trendlines.iter().map(|t| format!("{:?}", t.kind))).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+                "pivots": sh.pivots.iter().map(|pt| super::pivot::pivot_json(wb, si, pt)).collect::<Vec<_>>(),
                 "images": sh.images.len(),
                 "shapes": sh.shapes.len(),
                 "conditionalFormats": sh.cond_formats.len(),
