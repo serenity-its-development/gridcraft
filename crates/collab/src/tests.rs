@@ -343,3 +343,111 @@ fn a_big_seed_is_split_into_batches_of_at_most_the_hosts_limit() {
     assert!(batches.iter().all(|b| b.ops.len() <= crate::BATCH_OPS));
     assert!(batches[0].seed);
 }
+
+// ── charts, PivotTables and defined names are keyed entries of the room ────────────────────────────────────────────────────────
+
+fn chart(id: u32, title: &str) -> gridcraft_model::Chart {
+    gridcraft_model::Chart {
+        id,
+        kind: gridcraft_model::ChartKind::ColumnClustered,
+        anchor: gridcraft_model::Anchor { cell: a1("D2"), dx: 0.0, dy: 0.0, width: 480.0, height: 288.0, mode: Default::default() },
+        title: Some(title.into()),
+        series: Vec::new(),
+        legend: gridcraft_model::LegendPos::Bottom,
+        data_labels: false,
+        gridlines: true,
+        style: 1,
+        x_title: None,
+        y_title: None,
+        source: None,
+        by_rows: false,
+        pivot: None,
+    }
+}
+
+fn titles(w: &Win) -> Vec<String> {
+    let mut t: Vec<String> = w.wb.sheets[0].charts.iter().filter_map(|c| c.title.clone()).collect();
+    t.sort();
+    t
+}
+
+fn name(n: &str, f: &str) -> gridcraft_model::DefinedName {
+    gridcraft_model::DefinedName { name: n.into(), scope: None, formula: f.into(), comment: String::new(), hidden: false }
+}
+
+/// Both windows flush, then each hears its own acknowledgement and the other's changes.
+fn cross(a: &mut Win, b: &mut Win, room: &mut Room) {
+    let (ba, bb) = (a.flush(), b.flush());
+    let (ca, cb) = (room.take(&ba), room.take(&bb));
+    // The room applied A's batch, then B's: every window hears them in that order.
+    a.hear(&ca, ba.last().map_or(0, |x| x.seq));
+    a.hear(&cb, 0);
+    b.hear(&ca, 0);
+    b.hear(&cb, bb.last().map_or(0, |x| x.seq));
+}
+
+#[test]
+fn two_charts_made_at_once_both_land_whatever_numbers_the_windows_gave_them() {
+    let (mut a, mut b, mut room) = pair(book(&[&[1.0, 2.0]]));
+    // Both windows number their first chart 1: the numbers mean nothing between windows.
+    a.edit(0, |s| s.charts.push(chart(1, "Sales")));
+    b.edit(0, |s| s.charts.push(chart(1, "Costs")));
+    cross(&mut a, &mut b, &mut room);
+    assert_eq!(titles(&a), ["Costs", "Sales"]);
+    assert_eq!(titles(&a), titles(&b));
+    assert_eq!(digest(&a.wb), digest(&b.wb));
+    let ids: Vec<u32> = a.wb.sheets[0].charts.iter().map(|c| c.id).collect();
+    assert_ne!(ids[0], ids[1], "the editor's numbers stay distinct on a sheet");
+}
+
+#[test]
+fn editing_one_chart_and_deleting_another_at_once_both_land_and_one_chart_edited_twice_settles_on_one() {
+    let (mut a, mut b, mut room) = pair(book(&[&[1.0]]));
+    a.edit(0, |s| {
+        s.charts.push(chart(1, "One"));
+        s.charts.push(chart(2, "Two"));
+    });
+    send(&mut a, &mut b, &mut room);
+    assert_eq!(titles(&b), ["One", "Two"]);
+    // A retitles One, B deletes Two.
+    a.edit(0, |s| s.charts[0].title = Some("Uno".into()));
+    let two_in_b = b.wb.sheets[0].charts.iter().find(|c| c.title.as_deref() == Some("Two")).unwrap().id;
+    b.edit(0, |s| s.charts.retain(|c| c.id != two_in_b));
+    cross(&mut a, &mut b, &mut room);
+    assert_eq!(titles(&a), ["Uno"]);
+    assert_eq!(digest(&a.wb), digest(&b.wb));
+    // Both retitle the same chart at once: one title in both windows (the room's last writer), the chart is not doubled.
+    a.edit(0, |s| s.charts[0].title = Some("from A".into()));
+    b.edit(0, |s| s.charts[0].title = Some("from B".into()));
+    cross(&mut a, &mut b, &mut room);
+    assert_eq!(a.wb.sheets[0].charts.len(), 1);
+    assert_eq!(digest(&a.wb), digest(&b.wb));
+}
+
+#[test]
+fn a_pivot_and_a_name_travel_and_a_window_joining_later_gets_them() {
+    let (mut a, mut b, mut room) = pair(book(&[&[1.0]]));
+    a.edit(0, |s| {
+        let p = gridcraft_model::PivotTable { id: 1, name: "PivotTable1".into(), source: "Sheet1!$A$1:$B$5".into(), ..Default::default() };
+        s.pivots.push(p);
+    });
+    a.wb.names.push(name("Tax", "0.07"));
+    send(&mut a, &mut b, &mut room);
+    assert_eq!(b.wb.sheets[0].pivots.len(), 1);
+    assert_eq!(b.wb.sheets[0].pivots[0].name, "PivotTable1");
+    assert_eq!(b.wb.names.len(), 1);
+    // B redefines the name while A defines another: both land.
+    b.wb.names[0].formula = "0.1".into();
+    a.wb.names.push(name("Rate", "2"));
+    cross(&mut a, &mut b, &mut room);
+    assert_eq!(digest(&a.wb), digest(&b.wb));
+    assert_eq!(a.wb.names.len(), 2);
+    assert_eq!(a.wb.names.iter().find(|n| n.name == "Tax").unwrap().formula, "0.1");
+    // A window that joins now gets all of it; deleting a name goes to the others.
+    let mut c = Win::new(33, book(&[&[1.0]]));
+    c.join(&room);
+    assert_eq!(digest(&a.wb), digest(&c.wb));
+    a.wb.names.retain(|n| n.name != "Rate");
+    send(&mut a, &mut b, &mut room);
+    assert_eq!(b.wb.names.len(), 1);
+}

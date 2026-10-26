@@ -206,8 +206,8 @@ impl Window {
 
     /// A `craft:command {method: "command.batch"}` run: the engine's `run_batch` over the workbook this window shows (the same
     /// function the browser window answers with). Answers the result JSON; an error is the refusal text (`command-not-allowed: ...`).
-    /// What the run changed is in the workbook after it, so a following `flush` sends the shared part (cells, structure, styles);
-    /// charts, PivotTables and names are the workbook's own and ride the file.
+    /// What the run changed is in the workbook after it, so a following `flush` sends the shared part (cells, structure, styles, and
+    /// the charts, PivotTables and names the run made, changed or deleted: each is a keyed entry of the room).
     pub fn command_batch(&mut self, params_json: &str) -> Result<String, JsError> {
         let params: Value = serde_json::from_str(params_json).map_err(|e| JsError::new(&format!("params: {e}")))?;
         let mut session = gridcraft_engine::Session::new();

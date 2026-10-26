@@ -19,11 +19,17 @@
 //! | styles | `styles.<key>` | a style by CONTENT (the key is a hash of it), so windows never share style numbers |
 //! | row heights, column widths, hidden | `s.<sid>.rp.<rowId>`, `s.<sid>.cp.<colId>` | one value per line |
 //! | merged cells | `s.<sid>.mg.<rowId>:<colId>:<rowId>:<colId>` | a key per merge, by corner ids |
+//! | charts, PivotTables | `charts.<key>`, `pivots.<key>` | one entry per object: `{sh: sheet id, d: its definition}`, the key a minted id (the local numeric id means nothing between windows) |
+//! | defined names | `names.<name>@<sheet id>` | one entry per name and scope: `{n, f, c, h, sc}` |
 //! | comments | the host's comments tier | a thread per cell, anchored by ids ([`comments`]) |
 //! | cursors | the room's awareness | [`Shim::cursor_for`] out, [`Shim::peer_cursor`] in |
 //!
-//! Not shared live: charts, pictures, conditional formats, validations, tables, pivots, defined names, protection, print setup and
-//! a legacy array formula's cells. They are the file's, as opened; a change to them reaches other windows when the file is saved.
+//! ★ OBJECTS (charts, PivotTables, defined names) are keyed entries: two people changing DIFFERENT objects both land; two people
+//! changing ONE object settle on the room's last writer for the whole object (a definition is one value, not merged inside). A
+//! window applies a remote object as a remote change (no undo step); its own Undo is the room's.
+//!
+//! Not shared live: pictures, conditional formats, validations, tables, protection, print setup and a legacy array formula's cells.
+//! They are the file's, as opened; a change to them reaches other windows when the file is saved.
 //!
 //! The frame's own edits are not echoed back by the host, so the shim keeps its view of the shared tree itself: the host's truth
 //! (`confirmed`) plus the local batches the host has not yet acknowledged (`pending`), re-applied over every delta (the contract's
@@ -39,7 +45,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use gridcraft_core::{CellRef, MAX_COLS, RangeRef};
-use gridcraft_model::{Cell, CellStore, Color, Comment, Formula, LineInfo, Sheet, Style, StyleId, Visibility, Workbook};
+use gridcraft_model::{Cell, CellStore, Chart, Color, Comment, DefinedName, Formula, LineInfo, PivotTable, Sheet, Style, StyleId, Visibility, Workbook};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -339,12 +345,108 @@ pub struct Shown {
     pub styles: HashMap<String, Style>,
     /// Cell comments to show, or (`None`) take away: (sheet index, cell).
     pub comments: Vec<(usize, CellRef, Option<Comment>)>,
+    /// Charts, PivotTables and defined names the room changed.
+    pub objects: ObjectsShown,
+}
+
+/// What the room changed among the workbook's charts, PivotTables and defined names. Sheet indexes are in the new sheet order.
+#[derive(Debug, Clone, Default)]
+pub struct ObjectsShown {
+    /// The room's objects REPLACE the workbook's (a join): every chart, PivotTable and name is cleared first.
+    pub replace: bool,
+    /// (sheet, the editor's id of the chart or `None` for a chart new here, its definition).
+    pub charts: Vec<(usize, Option<u32>, Chart)>,
+    pub charts_removed: Vec<(usize, u32)>,
+    pub pivots: Vec<(usize, Option<u32>, PivotTable)>,
+    pub pivots_removed: Vec<(usize, u32)>,
+    pub names: Vec<DefinedName>,
+    /// (name, scope as a sheet index).
+    pub names_removed: Vec<(String, Option<usize>)>,
+}
+
+impl ObjectsShown {
+    fn is_empty(&self) -> bool {
+        !self.replace
+            && self.charts.is_empty()
+            && self.charts_removed.is_empty()
+            && self.pivots.is_empty()
+            && self.pivots_removed.is_empty()
+            && self.names.is_empty()
+            && self.names_removed.is_empty()
+    }
+
+    fn apply_to(&self, wb: &mut Workbook, applied: &mut Applied) {
+        if self.is_empty() {
+            return;
+        }
+        if self.replace {
+            for slot in &mut wb.sheets {
+                if !slot.charts.is_empty() || !slot.pivots.is_empty() {
+                    let sheet = Arc::make_mut(slot);
+                    sheet.charts.clear();
+                    sheet.pivots.clear();
+                }
+            }
+            wb.names.clear();
+        }
+        for (idx, id) in &self.charts_removed {
+            if let Some(slot) = wb.sheets.get_mut(*idx) {
+                Arc::make_mut(slot).charts.retain(|c| c.id != *id);
+            }
+        }
+        for (idx, id) in &self.pivots_removed {
+            if let Some(slot) = wb.sheets.get_mut(*idx) {
+                Arc::make_mut(slot).pivots.retain(|p| p.id != *id);
+            }
+        }
+        for (idx, local, chart) in &self.charts {
+            let fresh = wb.sheets.iter().flat_map(|s| s.charts.iter().map(|c| c.id)).max().unwrap_or(0) + 1;
+            let Some(slot) = wb.sheets.get_mut(*idx) else { continue };
+            let sheet = Arc::make_mut(slot);
+            let mut chart = chart.clone();
+            match local.and_then(|id| sheet.charts.iter().position(|c| c.id == id)) {
+                Some(at) => {
+                    chart.id = sheet.charts[at].id;
+                    sheet.charts[at] = chart;
+                }
+                None => {
+                    chart.id = fresh;
+                    sheet.charts.push(chart);
+                }
+            }
+        }
+        for (idx, local, pivot) in &self.pivots {
+            let fresh = wb.sheets.iter().flat_map(|s| s.pivots.iter().map(|p| p.id)).max().unwrap_or(0) + 1;
+            let Some(slot) = wb.sheets.get_mut(*idx) else { continue };
+            let sheet = Arc::make_mut(slot);
+            let mut pivot = pivot.clone();
+            match local.and_then(|id| sheet.pivots.iter().position(|p| p.id == id)) {
+                Some(at) => {
+                    pivot.id = sheet.pivots[at].id;
+                    sheet.pivots[at] = pivot;
+                }
+                None => {
+                    pivot.id = fresh;
+                    sheet.pivots.push(pivot);
+                }
+            }
+        }
+        for (name, scope) in &self.names_removed {
+            wb.names.retain(|n| !(n.name.eq_ignore_ascii_case(name) && n.scope == *scope));
+        }
+        for n in &self.names {
+            wb.names.retain(|o| !(o.name.eq_ignore_ascii_case(&n.name) && o.scope == n.scope));
+            wb.names.push(n.clone());
+        }
+        // A name changes what formulas mean: the calculation is rebuilt.
+        applied.structure |= self.replace || !self.names.is_empty() || !self.names_removed.is_empty();
+    }
 }
 
 impl Shown {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        !self.replace_all && self.layout.is_none() && self.sheets.iter().all(|(_, s)| s.is_empty()) && self.comments.is_empty()
+        !self.replace_all && self.layout.is_none() && self.sheets.iter().all(|(_, s)| s.is_empty()) && self.comments.is_empty() && self.objects.is_empty()
     }
 
     /// Apply to the editor's workbook what the remote changes altered. Nothing here is an edit of this person's, so the shim
@@ -426,6 +528,7 @@ impl Shown {
                 sheet.merges.clone_from(m);
             }
         }
+        self.objects.apply_to(wb, &mut applied);
         for (idx, at, comment) in &self.comments {
             if let Some(slot) = wb.sheets.get_mut(*idx) {
                 let sheet = Arc::make_mut(slot);
@@ -591,16 +694,69 @@ pub fn digest(wb: &Workbook) -> Value {
             for (at, c) in &s.comments {
                 comments.insert(at.a1(), json!({"text": c.text, "resolved": c.resolved, "replies": c.replies.iter().map(|(_, t)| t).collect::<Vec<_>>()}));
             }
+            let mut charts: Vec<String> = s.charts.iter().filter_map(|c| chart_def(c).ok()).map(|v| v.to_string()).collect();
+            charts.sort();
+            let mut pivots: Vec<String> = s.pivots.iter().filter_map(|p| pivot_def(p).ok()).map(|v| v.to_string()).collect();
+            pivots.sort();
             json!({
                 "name": s.name, "vis": s.visibility, "tab": s.tab_color, "freeze": s.freeze,
                 "cells": cells, "rows": props(&s.rows), "cols": props(&s.cols), "merges": merges, "comments": comments,
+                "charts": charts, "pivots": pivots,
             })
         })
         .collect();
-    json!({"sheets": sheets})
+    let mut names: Vec<String> = wb.names.iter().map(|n| json!({"n": n.name, "f": n.formula, "c": n.comment, "h": n.hidden, "sc": n.scope}).to_string()).collect();
+    names.sort();
+    json!({"sheets": sheets, "names": names})
+}
+
+/// One chart or PivotTable as the shim last synced it: the room's key, the sheet, the editor's own numeric id (`None` until the
+/// editor holds it) and the definition without that id.
+#[derive(Debug, Clone)]
+struct Obj {
+    sid: String,
+    local: Option<u32>,
+    def: Value,
+}
+
+/// The charts, PivotTables and names as last synced; a name is keyed by `name@sheet id` and holds its definition.
+#[derive(Debug, Clone, Default)]
+struct ObjSync {
+    charts: BTreeMap<String, Obj>,
+    pivots: BTreeMap<String, Obj>,
+    names: BTreeMap<String, Value>,
+}
+
+/// The roots of the shared tree that hold objects.
+const OBJECT_ROOTS: [&str; 3] = ["charts", "pivots", "names"];
+
+fn chart_def(c: &Chart) -> Result<Value, ShimError> {
+    let mut v = json_of(c)?;
+    if let Some(o) = v.as_object_mut() {
+        o.remove("id");
+    }
+    bounded("a chart", v)
+}
+
+fn pivot_def(p: &PivotTable) -> Result<Value, ShimError> {
+    let mut v = json_of(p)?;
+    if let Some(o) = v.as_object_mut() {
+        o.remove("id");
+    }
+    bounded("a PivotTable", v)
+}
+
+/// The room's key of a name in a scope (a name is one name whatever its case).
+fn name_key(name: &str, sid: Option<&str>) -> String {
+    format!("{}@{}", name.to_lowercase(), sid.unwrap_or(""))
+}
+
+fn name_def(n: &DefinedName, sid: Option<&str>) -> Result<Value, ShimError> {
+    bounded("a defined name", json!({"n": n.name, "f": n.formula, "c": n.comment, "h": n.hidden, "sc": sid}))
 }
 
 pub struct Shim {
+    objs: ObjSync,
     minter: Minter,
     sheets: Vec<SheetSync>,
     /// The styles the room holds, by key (as parsed and written again).
@@ -634,6 +790,7 @@ impl Shim {
     #[must_use]
     pub fn new(seed: u64) -> Self {
         Shim {
+            objs: ObjSync::default(),
             minter: Minter { rng: seed | 1, minted: HashSet::new() },
             sheets: Vec::new(),
             styles: HashMap::new(),
@@ -743,6 +900,7 @@ impl Shim {
     /// follow as ordinary batches, each leaving the tree complete up to its last op.
     pub fn seed_all(&mut self, wb: &Workbook, now_ms: u64) -> Result<Vec<Batch>, ShimError> {
         self.sheets.clear();
+        self.objs = ObjSync::default();
         self.styles.clear();
         self.style_keys.clear();
         self.style_ops.clear();
@@ -761,6 +919,7 @@ impl Shim {
             json!({"op": "ensure", "path": [], "key": "s", "kind": "map"}),
             json!({"op": "ensure", "path": [], "key": "styles", "kind": "map"}),
         ];
+        roots.extend(OBJECT_ROOTS.iter().map(|k| json!({"op": "ensure", "path": [], "key": k, "kind": "map"})));
         roots.append(&mut ops);
         let mut batches = Vec::new();
         self.emit(roots, "Opened the file", false, true, now_ms, &mut batches)?;
@@ -778,7 +937,7 @@ impl Shim {
         self.minter.minted.clear();
         // A room seeded before a root existed lacks it: made now (`ensure` merges two people doing it at once).
         let mut roots = Vec::new();
-        for (key, kind) in [("sheets", "list"), ("s", "map"), ("styles", "map")] {
+        for (key, kind) in [("sheets", "list"), ("s", "map"), ("styles", "map"), ("charts", "map"), ("pivots", "map"), ("names", "map")] {
             if self.view.get(&[key]).is_none() {
                 roots.push(json!({"op": "ensure", "path": [], "key": key, "kind": kind}));
             }
@@ -800,6 +959,222 @@ impl Shim {
             ss.store = Some(sheet.cells.clone());
             ss.arc = Some(sheet.clone());
         }
+        // A chart or PivotTable the room made now has an id of the editor's: the one whose definition it is.
+        let index: HashMap<&str, usize> = self.sheets.iter().enumerate().map(|(i, s)| (s.id.as_str(), i)).collect();
+        let mut claimed: HashSet<(String, u32)> = HashSet::new();
+        for map in [&self.objs.charts, &self.objs.pivots] {
+            for o in map.values() {
+                if let Some(id) = o.local {
+                    claimed.insert((o.sid.clone(), id));
+                }
+            }
+        }
+        for (is_chart, map) in [(true, &mut self.objs.charts), (false, &mut self.objs.pivots)] {
+            for o in map.values_mut().filter(|o| o.local.is_none()) {
+                let Some(sheet) = index.get(o.sid.as_str()).and_then(|i| wb.sheets.get(*i)) else { continue };
+                let found = if is_chart {
+                    sheet.charts.iter().find(|c| !claimed.contains(&(o.sid.clone(), c.id)) && chart_def(c).is_ok_and(|d| d == o.def)).map(|c| c.id)
+                } else {
+                    sheet.pivots.iter().find(|p| !claimed.contains(&(o.sid.clone(), p.id)) && pivot_def(p).is_ok_and(|d| d == o.def)).map(|p| p.id)
+                };
+                if let Some(id) = found {
+                    claimed.insert((o.sid.clone(), id));
+                    o.local = Some(id);
+                }
+            }
+        }
+    }
+
+    /// ★ Charts, PivotTables and names: each is a keyed entry of the room; a local change to one is a `set` (or `remove`) of its key.
+    fn diff_objects(&mut self, wb: &Workbook, ops: &mut Vec<Value>) -> Result<(), ShimError> {
+        let sids: Vec<String> = self.sheets.iter().map(|s| s.id.clone()).collect();
+        let mut charts = Vec::new();
+        let mut pivots = Vec::new();
+        for (sid, sheet) in sids.iter().zip(&wb.sheets) {
+            for c in &sheet.charts {
+                charts.push((sid.clone(), c.id, chart_def(c)?));
+            }
+            for p in &sheet.pivots {
+                pivots.push((sid.clone(), p.id, pivot_def(p)?));
+            }
+        }
+        for (root, local, is_chart) in [("charts", charts, true), ("pivots", pivots, false)] {
+            let mut seen: HashSet<String> = HashSet::new();
+            for (sid, id, def) in local {
+                let map = if is_chart { &mut self.objs.charts } else { &mut self.objs.pivots };
+                let found = map.iter().find(|(_, o)| o.local == Some(id) && o.sid == sid).map(|(k, _)| k.clone());
+                match found {
+                    Some(key) => {
+                        if let Some(o) = map.get_mut(&key)
+                            && o.def != def
+                        {
+                            ops.push(json!({"op": "set", "path": [root], "key": key, "value": {"sh": sid, "d": def}}));
+                            o.def = def;
+                        }
+                        seen.insert(key);
+                    }
+                    None => {
+                        let key = loop {
+                            let k = self.minter.mint('k', &|_| false);
+                            let map = if is_chart { &self.objs.charts } else { &self.objs.pivots };
+                            if !map.contains_key(&k) && self.view.get(&[root, &k]).is_none() {
+                                break k;
+                            }
+                        };
+                        ops.push(json!({"op": "set", "path": [root], "key": key, "value": {"sh": sid, "d": def}}));
+                        let map = if is_chart { &mut self.objs.charts } else { &mut self.objs.pivots };
+                        map.insert(key.clone(), Obj { sid, local: Some(id), def });
+                        seen.insert(key);
+                    }
+                }
+            }
+            // An object the editor held and no longer does is gone from the room (one the room made and the editor has not taken yet
+            // has no editor id and stays).
+            let map = if is_chart { &mut self.objs.charts } else { &mut self.objs.pivots };
+            let gone: Vec<String> = map.iter().filter(|(k, o)| o.local.is_some() && !seen.contains(*k)).map(|(k, _)| k.clone()).collect();
+            for key in gone {
+                ops.push(json!({"op": "remove", "path": [root], "key": key}));
+                map.remove(&key);
+            }
+        }
+        // Names.
+        let mut want: BTreeMap<String, Value> = BTreeMap::new();
+        for n in &wb.names {
+            let sid = match n.scope {
+                Some(i) => match sids.get(i) {
+                    Some(s) => Some(s.as_str()),
+                    None => continue,
+                },
+                None => None,
+            };
+            want.insert(name_key(&n.name, sid), name_def(n, sid)?);
+        }
+        for (key, def) in &want {
+            if self.objs.names.get(key) != Some(def) {
+                ops.push(json!({"op": "set", "path": ["names"], "key": key, "value": def}));
+            }
+        }
+        for key in self.objs.names.keys() {
+            if !want.contains_key(key) {
+                ops.push(json!({"op": "remove", "path": ["names"], "key": key}));
+            }
+        }
+        self.objs.names = want;
+        Ok(())
+    }
+
+    /// Compare the room's charts, PivotTables and names with what was synced; what differs is noted for the editor to take in.
+    /// Called with the sheets already in the room's order.
+    fn read_objects(&mut self, replace: bool) {
+        let index: HashMap<String, usize> = self.sheets.iter().enumerate().map(|(i, s)| (s.id.clone(), i)).collect();
+        let mut out = std::mem::take(&mut self.shown.objects);
+        if replace {
+            self.objs = ObjSync::default();
+            out = ObjectsShown { replace: true, ..ObjectsShown::default() };
+        }
+        for (root, is_chart) in [("charts", true), ("pivots", false)] {
+            let mut want: BTreeMap<String, (String, Value, Option<Chart>, Option<PivotTable>)> = BTreeMap::new();
+            if let Some(m) = map_of(self.view.get(&[root])) {
+                for (key, v) in m {
+                    let v = plain(v);
+                    let (Some(sid), Some(d)) = (v.get("sh").and_then(Value::as_str), v.get("d")) else { continue };
+                    if !index.contains_key(sid) {
+                        continue;
+                    }
+                    let mut full = d.clone();
+                    if let Some(o) = full.as_object_mut() {
+                        o.insert("id".to_owned(), Value::from(0));
+                    }
+                    // Parsed and written again, so the stored form is the model's own and a later local diff finds nothing to say.
+                    if is_chart {
+                        if let Ok(c) = serde_json::from_value::<Chart>(full)
+                            && let Ok(def) = chart_def(&c)
+                        {
+                            want.insert(key.clone(), (sid.to_owned(), def, Some(c), None));
+                        }
+                    } else if let Ok(p) = serde_json::from_value::<PivotTable>(full)
+                        && let Ok(def) = pivot_def(&p)
+                    {
+                        want.insert(key.clone(), (sid.to_owned(), def, None, Some(p)));
+                    }
+                }
+            }
+            let map = if is_chart { &mut self.objs.charts } else { &mut self.objs.pivots };
+            for (key, (sid, def, chart, pivot)) in want.iter() {
+                let idx = index[sid];
+                let local = match map.get_mut(key) {
+                    Some(o) if o.sid == *sid && o.def == *def => continue,
+                    Some(o) => {
+                        o.def = def.clone();
+                        o.local
+                    }
+                    None => {
+                        map.insert(key.clone(), Obj { sid: sid.clone(), local: None, def: def.clone() });
+                        None
+                    }
+                };
+                if let Some(c) = chart {
+                    out.charts.push((idx, local, c.clone()));
+                }
+                if let Some(p) = pivot {
+                    out.pivots.push((idx, local, p.clone()));
+                }
+            }
+            let gone: Vec<String> = map.keys().filter(|k| !want.contains_key(*k)).cloned().collect();
+            for key in gone {
+                if let Some(o) = map.remove(&key)
+                    && let (Some(id), Some(idx)) = (o.local, index.get(&o.sid))
+                {
+                    if is_chart {
+                        out.charts_removed.push((*idx, id));
+                    } else {
+                        out.pivots_removed.push((*idx, id));
+                    }
+                }
+            }
+        }
+        // Names.
+        let mut want: BTreeMap<String, (DefinedName, Value)> = BTreeMap::new();
+        if let Some(m) = map_of(self.view.get(&["names"])) {
+            for (key, v) in m {
+                let v = plain(v);
+                let (Some(name), Some(formula)) = (v.get("n").and_then(Value::as_str), v.get("f").and_then(Value::as_str)) else { continue };
+                let sid = v.get("sc").and_then(Value::as_str);
+                let scope = match sid {
+                    Some(s) => match index.get(s) {
+                        Some(i) => Some(*i),
+                        None => continue,
+                    },
+                    None => None,
+                };
+                let dn = DefinedName {
+                    name: name.to_owned(),
+                    scope,
+                    formula: formula.to_owned(),
+                    comment: v.get("c").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                    hidden: v.get("h").and_then(Value::as_bool).unwrap_or(false),
+                };
+                if let Ok(def) = name_def(&dn, sid) {
+                    want.insert(key.clone(), (dn, def));
+                }
+            }
+        }
+        for (key, (dn, def)) in &want {
+            if self.objs.names.get(key) != Some(def) {
+                out.names.push(dn.clone());
+                self.objs.names.insert(key.clone(), def.clone());
+            }
+        }
+        let gone: Vec<String> = self.objs.names.keys().filter(|k| !want.contains_key(*k)).cloned().collect();
+        for key in gone {
+            if let Some(def) = self.objs.names.remove(&key) {
+                let scope = def.get("sc").and_then(Value::as_str).and_then(|s| index.get(s)).copied();
+                if let Some(n) = def.get("n").and_then(Value::as_str) {
+                    out.names_removed.push((n.to_owned(), scope));
+                }
+            }
+        }
+        self.shown.objects = out;
     }
 
     fn diff_workbook(&mut self, wb: &Workbook, ops: &mut Vec<Value>, kinds: &mut Kinds) -> Result<(), ShimError> {
@@ -889,6 +1264,7 @@ impl Shim {
             next[i] = ss;
         }
         self.sheets = next;
+        self.diff_objects(wb, ops)?;
         // The styles the cells now use go first.
         if !self.style_ops.is_empty() {
             let styles = std::mem::take(&mut self.style_ops);
@@ -1441,6 +1817,7 @@ impl Shim {
             self.shown.sheets.push((i, shown));
         }
         self.sheets = sheets;
+        self.read_objects(true);
         Ok(())
     }
 
@@ -1479,8 +1856,10 @@ impl Shim {
         let mut touched: BTreeSet<String> = BTreeSet::new();
         let mut order_changed = false;
         let mut styles_changed = false;
+        let mut objects_changed = false;
         for c in changes {
             match c.path.first().map(String::as_str) {
+                Some(r) if OBJECT_ROOTS.contains(&r) => objects_changed = true,
                 Some("s") => match c.path.get(1) {
                     Some(sid) => {
                         touched.insert(sid.clone());
@@ -1497,7 +1876,7 @@ impl Shim {
         if ids != current {
             order_changed = true;
         }
-        if touched.is_empty() && !order_changed && !styles_changed {
+        if touched.is_empty() && !order_changed && !styles_changed && !objects_changed {
             return Ok(false);
         }
         let mut old: HashMap<String, (usize, SheetSync)> = std::mem::take(&mut self.sheets).into_iter().enumerate().map(|(i, s)| (s.id.clone(), (i, s))).collect();
@@ -1538,6 +1917,7 @@ impl Shim {
             next.push(ss);
         }
         self.sheets = next;
+        self.read_objects(false);
         if layout.len() != current.len() || layout.iter().enumerate().any(|(i, o)| *o != Some(i)) {
             self.shown.layout = Some(layout);
         }
