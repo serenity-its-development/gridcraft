@@ -1,4 +1,4 @@
-//! GridCraft data kept in hidden workbook-scope defined names, so that it travels inside the xlsx
+//! Sheets data kept in hidden workbook-scope defined names, so that it travels inside the xlsx
 //! file.
 //!
 //! An item `key` is stored as names `_gc_<key>_0`, `_gc_<key>_1`, …, each a formula of string
@@ -183,13 +183,13 @@ pub fn set(wb: &mut Workbook, key: &str, text: &str) -> Result<()> {
     };
     if let Some(n) = wb.names.iter().find(taken) {
         return Err(EngineError::Other(format!(
-            "The workbook has a defined name '{}', which GridCraft needs for its own data. Rename it first.",
+            "The workbook has a defined name '{}', which Sheets needs for its own data. Rename it first.",
             n.name
         )));
     }
     remove(wb, key);
     for (i, formula) in formulas.into_iter().enumerate() {
-        wb.names.push(DefinedName { name: format!("{PREFIX}{key}_{i}"), scope: None, formula, comment: "GridCraft data".into(), hidden: true });
+        wb.names.push(DefinedName { name: format!("{PREFIX}{key}_{i}"), scope: None, formula, comment: "Sheets data".into(), hidden: true });
     }
     Ok(())
 }

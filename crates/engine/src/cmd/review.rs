@@ -436,7 +436,7 @@ mod tests {
         assert_eq!(s.doc().unwrap().wb.active().unwrap().protection.as_ref(), Some(&prot));
         s.execute("review.unprotectSheet", json!({"password": "pa55"})).unwrap();
         assert!(!s.doc().unwrap().wb.active().unwrap().is_protected());
-        // A GridCraft JSON workbook saved before carried the internal hash under `password_hash`.
+        // A Sheets JSON workbook saved before carried the internal hash under `password_hash`.
         let old = format!(
             r#"{{"password_hash": {}, "select_locked": true, "select_unlocked": true, "format_cells": false, "format_columns": false, "format_rows": false, "insert_columns": false, "insert_rows": false, "delete_columns": false, "delete_rows": false, "sort": false, "autofilter": false}}"#,
             password_hash("old")

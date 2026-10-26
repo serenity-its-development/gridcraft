@@ -32,7 +32,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Define Name…",
             ["Formulas", "Defined Names"],
             None,
-            "{name, refersTo?: \"=Sheet1!$A$1:$A$10\" (default: the selection), scope?: \"Workbook\"|sheet name, comment?, oldName?, oldScope?, force?: bool} (oldName: edit that name (Name Manager › Edit); a new name also renames it in formulas; a hidden name GridCraft keeps its own data in, `_gc_<key>_<n>` or `_sc_<key>`, is refused unless force is true)",
+            "{name, refersTo?: \"=Sheet1!$A$1:$A$10\" (default: the selection), scope?: \"Workbook\"|sheet name, comment?, oldName?, oldScope?, force?: bool} (oldName: edit that name (Name Manager › Edit); a new name also renames it in formulas; a hidden name Sheets keeps its own data in, `_gc_<key>_<n>` or `_sc_<key>`, is refused unless force is true)",
             has_doc,
             define_name
         ),
@@ -41,7 +41,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Name",
             [],
             None,
-            "{name, scope?: \"Workbook\"|sheet name (default: every scope), force?: bool} (a hidden name GridCraft keeps its own data in, `_gc_<key>_<n>` or `_sc_<key>`, is refused unless force is true)",
+            "{name, scope?: \"Workbook\"|sheet name (default: every scope), force?: bool} (a hidden name Sheets keeps its own data in, `_gc_<key>_<n>` or `_sc_<key>`, is refused unless force is true)",
             has_doc,
             delete_name
         ),
@@ -51,7 +51,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create from Selection",
             ["Formulas", "Defined Names"],
             Some("Cmd+Shift+F3"),
-            "{range?, top?: true, left?: false, bottom?: false, right?: false, replace?: false (existing names are kept and listed in `skipped`), force?: false (labels of the shape GridCraft keeps its own data in, `_gc_<key>_<n>` and `_sc_<key>`, are listed in `skipped` unless force is true)}",
+            "{range?, top?: true, left?: false, bottom?: false, right?: false, replace?: false (existing names are kept and listed in `skipped`), force?: false (labels of the shape Sheets keeps its own data in, `_gc_<key>_<n>` and `_sc_<key>`, are listed in `skipped` unless force is true)}",
             has_doc,
             create_from_selection
         ),
@@ -394,10 +394,10 @@ fn rename_name_in_formulas(wb: &mut gridcraft_model::Workbook, old: &str, old_sc
     }
 }
 
-/// Refuses a name of the shape GridCraft keeps its own workbook data in ([`super::stash`]):
+/// Refuses a name of the shape Sheets keeps its own workbook data in ([`super::stash`]):
 /// defining, renaming or deleting one would replace or remove part of an item (a stored macro,
 /// script or view) and leave the rest behind. `force: true` lets the call go ahead.
-/// Whether `name` is one the workbook holds GridCraft's own data in: a hidden workbook-scope
+/// Whether `name` is one the workbook holds Sheets's own data in: a hidden workbook-scope
 /// name of an item's shape. A visible name of that shape is the person's own (see `stash`), and
 /// the name commands may change it.
 fn holds_gridcraft_data(wb: &Workbook, name: &str) -> bool {
@@ -408,7 +408,7 @@ fn holds_gridcraft_data(wb: &Workbook, name: &str) -> bool {
 fn refuse_stash_name(wb: &Workbook, p: &Json, name: &str) -> Result<()> {
     if holds_gridcraft_data(wb, name) && !bool_param(p, "force").unwrap_or(false) {
         return Err(EngineError::Other(format!(
-            "'{name}' is a name GridCraft keeps its own data in (stored macros, scripts or views). Pass `force: true` to change it anyway."
+            "'{name}' is a name Sheets keeps its own data in (stored macros, scripts or views). Pass `force: true` to change it anyway."
         )));
     }
     Ok(())
@@ -502,7 +502,7 @@ fn create_from_selection(s: &mut Session, p: &Json) -> Result<Json> {
     // Excel asks before replacing an existing name; here it's kept unless `replace` is set, and
     // reported.
     let exists = |n: &str| d.wb.names.iter().any(|x| x.name.eq_ignore_ascii_case(n) && x.scope.is_none());
-    // A label that names one of GridCraft's own hidden data names would replace part of an item
+    // A label that names one of Sheets's own hidden data names would replace part of an item
     // (see `refuse_stash_name`).
     let force = bool_param(p, "force").unwrap_or(false);
     let ours = |n: &str| !force && holds_gridcraft_data(&d.wb, n);

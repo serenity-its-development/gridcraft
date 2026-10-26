@@ -1,4 +1,4 @@
-//! GridCraft in the browser.
+//! Sheets in the browser.
 //!
 //! Runs the same [`gridcraft_ui_egui::SheetApp`] as the desktop app through eframe's web runner
 //! (wgpu: WebGPU where available, WebGL2 otherwise). Build with `trunk build --release` from
@@ -8,13 +8,15 @@
 //! (bytes arrive asynchronously through `Services::inbox`); Save downloads the file; dropped
 //! files are read asynchronously.
 //!
-//! URL query flags: `?webgl` forces WebGL2; `?sample=sales|budget|grades` opens a sample;
-//! `?host=parent` (inside an `<iframe>`) talks to a same-origin parent page instead: it sends the
-//! workbook to open and stores what GridCraft saves (`host`), and `&author=` names the user for
-//! notes and comments. Preferences (theme, interface size, editing options…) are kept in
+//! URL query flags: `?webgl` forces WebGL2; `?sample=sales|budget|grades` opens a sample.
+//! Framed by OneOS, it talks to the ONE parent origin the frame page declared (`host`): the host sends the
+//! workbook to open and stores what Sheets saves as a new version, and the workbook is a live document
+//! (`collab`) when the host says so. Preferences (theme, interface size, editing options…) are kept in
 //! `localStorage` (`prefs`).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+#[cfg(target_arch = "wasm32")]
+mod collab;
 #[cfg(target_arch = "wasm32")]
 mod host;
 #[cfg(any(target_arch = "wasm32", test))]

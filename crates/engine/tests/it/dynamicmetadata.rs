@@ -12,7 +12,7 @@ fn at(s: &str) -> CellRef {
     CellRef::parse(s).unwrap()
 }
 
-/// A workbook saved by GridCraft whose D1 formula came from a file with `cm`.
+/// A workbook saved by Sheets whose D1 formula came from a file with `cm`.
 fn opened() -> Session {
     let mut wb = Workbook::new();
     let sh = wb.sheet_mut(0).unwrap();

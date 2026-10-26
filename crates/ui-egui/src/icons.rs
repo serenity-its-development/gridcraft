@@ -1,4 +1,4 @@
-//! GridCraft's icon set, drawn in code on a 16×16 design grid (original artwork; see
+//! Sheets's icon set, drawn in code on a 16×16 design grid (original artwork; see
 //! ATTRIBUTION.md). Large ribbon icons use the same drawings at 32×32 with accent colours.
 //! Accent and paper colours come from the theme tokens, so icons follow light and dark mode;
 //! icons placed on the sheet ([`paint_on_sheet`]) keep the light colours, as the sheet does.

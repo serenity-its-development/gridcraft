@@ -1,4 +1,4 @@
-//! The GridCraft engine façade.
+//! The Sheets engine façade.
 //!
 //! Every user-visible action is a command with a stable id (`cell.set`, `home.bold`,
 //! `data.sortAscending`…) and JSON parameters. The egui UI, the CLI, the control channel and MCP
@@ -379,7 +379,7 @@ impl Default for Prefs {
         Prefs {
             enter_direction: "down".into(),
             autocomplete: true,
-            user_name: "GridCraft User".into(),
+            user_name: "Sheets User".into(),
             default_font: gridcraft_model::DEFAULT_FONT.into(),
             default_font_size: gridcraft_model::DEFAULT_FONT_SIZE,
             sheets_in_new_workbook: 1,
@@ -462,6 +462,22 @@ pub struct Session {
     /// Measures cell text for AutoFit Column Width. Without it (CLI, MCP) AutoFit uses
     /// [`cmd::format::approx_text_width`].
     pub text_width: Option<TextWidth>,
+    /// OneOS live editing: the workbook is a shared document, so Undo and Redo are the room's, not this session's (a
+    /// snapshot of the workbook would also take back what other people typed). The commands then only queue a request in
+    /// [`Session::collab_undo_requests`] (`true`: undo, `false`: redo) for the host bridge to send.
+    pub collab_undo: bool,
+    pub collab_undo_requests: Vec<bool>,
+    /// OneOS: the workbook is open to view. No command that changes it runs.
+    pub view_only: bool,
+}
+
+/// What a change made the way the room made it (not an edit of this person's) touched, for the calculation to catch up.
+#[derive(Clone, Debug, Default)]
+pub struct RemoteChange {
+    /// Sheets or lines moved: everything is recalculated.
+    pub structure: bool,
+    /// Cells set or cleared (sheet index, cell).
+    pub cells: Vec<(usize, CellRef)>,
 }
 
 impl Session {
@@ -505,6 +521,24 @@ impl Session {
             }
         }
     }
+    /// OneOS live editing: change the active workbook the way the room did. It is not an edit of this person's, so it makes no undo
+    /// step; the calculation catches up with what it touched, and a workbook that was clean stays clean.
+    pub fn change_remote(&mut self, f: impl FnOnce(&mut Workbook) -> RemoteChange) {
+        let Some(d) = self.docs.get_mut(self.active) else { return };
+        let was_clean = !d.is_dirty();
+        let change = f(Arc::make_mut(&mut d.wb));
+        if change.structure {
+            d.calc.rebuild(&d.wb);
+            d.calc.recalc_all(Arc::make_mut(&mut d.wb));
+        } else if !change.cells.is_empty() {
+            d.calc.cells_changed(Arc::make_mut(&mut d.wb), &change.cells);
+        }
+        d.revision += 1;
+        if was_clean {
+            d.saved = d.wb.clone();
+        }
+    }
+
     /// A new blank workbook titled `BookN`.
     pub fn new_workbook(&mut self) -> usize {
         let n = (1..).find(|n| !self.docs.iter().any(|d| d.title == format!("Book{n}") && d.path.is_none())).unwrap_or(1);
@@ -559,6 +593,9 @@ impl Session {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         if let Err(why) = (spec.enabled)(self) {
             return Err(EngineError::Disabled(id.to_string(), why));
+        }
+        if self.view_only && spec.undoable {
+            return Err(EngineError::Disabled(id.to_string(), "this workbook is open to view".into()));
         }
         let before = self.active().map(|d| (d.uid, d.wb.clone(), d.selection.clone()));
         let params = if params.is_null() { Json::Object(Default::default()) } else { params };

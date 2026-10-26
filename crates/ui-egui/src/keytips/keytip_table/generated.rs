@@ -9,7 +9,7 @@ pub const SEQUENCES: &[(&str, Entry)] = &[
     ("F", Entry::Tab("File")), // Excel: File tab (Backstage view); Opens the File view on Home; its letters below still run their commands.
     ("H", Entry::Tab("Home")),
     ("N", Entry::Tab("Insert")),
-    ("JI", Entry::Tab("Draw")), // Two-letter unit. Deeper Draw letters differ between Excel and GridCraft; left blank for future contributors.
+    ("JI", Entry::Tab("Draw")), // Two-letter unit. Deeper Draw letters differ between Excel and Sheets; left blank for future contributors.
     ("P", Entry::Tab("Page Layout")),
     ("M", Entry::Tab("Formulas")),
     ("A", Entry::Tab("Data")),
@@ -42,7 +42,7 @@ pub const SEQUENCES: &[(&str, Entry)] = &[
     ("HBB", Entry::Finish(Action::CommandWith("home.borders", "{\"preset\":\"doubleBottom\"}"))), // Excel: Bottom Double Border; Borders menu item
     ("HBC", Entry::Finish(Action::CommandWith("home.borders", "{\"preset\":\"topThickBottom\"}"))), // Excel: Top and Thick Bottom Border; Borders menu item
     ("HBD", Entry::Finish(Action::CommandWith("home.borders", "{\"preset\":\"topBottom\"}"))),      // Excel: Top and Bottom Border; Borders menu item
-    ("HBE", Entry::Finish(Action::Pending("home.eraseBorder"))), // pending; Excel: Erase Border; pending: Excel arms an eraser pen; GridCraft has no border pen mode yet
+    ("HBE", Entry::Finish(Action::Pending("home.eraseBorder"))), // pending; Excel: Erase Border; pending: Excel arms an eraser pen; Sheets has no border pen mode yet
     ("HBG", Entry::Finish(Action::Command("home.drawBorder"))),  // Excel: Draw Border Grid; containment(Draw Border)
     ("HBH", Entry::Finish(Action::CommandWith("home.borders", "{\"preset\":\"thickBottom\"}"))), // Excel: Thick Bottom Border; Borders menu item
     ("HBI", Entry::Finish(Action::Pending("home.borderLineColor"))), // pending; Excel: Line Color; pending: Line Color submenu

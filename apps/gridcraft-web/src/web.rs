@@ -36,9 +36,10 @@ pub fn start() {
         {
             create.instance_descriptor.backends = eframe::wgpu::Backends::GL;
         }
-        // `?host=parent`: a same-origin page framing GridCraft (such as a Nextcloud app) opens
-        // workbooks in it and stores what it saves (`host`).
-        let bridge = if query_param("host").as_deref() == Some("parent") { crate::host::Bridge::new() } else { None };
+        // OneOS host bridge: the frame page's loader (`bootstrap.js`) declares the ONE parent origin this editor answers to
+        // (`globalThis.__craftHost`); with none declared the editor runs unframed and saves download. The host guards leaving
+        // the page, so this one doesn't.
+        let bridge = crate::host::Bridge::new();
         let app_bridge = bridge.clone();
         let result = eframe::WebRunner::new()
             .start(
@@ -47,7 +48,7 @@ pub fn start() {
                 Box::new(move |cc| {
                     let inbox: Inbox = Inbox::default();
                     let mut session = Session::new();
-                    // In host mode the parent sends the workbook to edit; no sample meanwhile.
+                    // Framed, the host sends the workbook to edit; no sample meanwhile.
                     let q = if app_bridge.is_some() { String::new() } else { query() };
                     if let Some(name) = q.split(['?', '&']).find_map(|kv| kv.strip_prefix("sample=")) {
                         let _ = session.execute("file.new", serde_json::json!({"sample": name}));
@@ -55,10 +56,13 @@ pub fn start() {
                         let _ = session.execute("file.new", serde_json::json!({"sample": "sales"}));
                     }
                     let mut services = services(inbox.clone(), cc.egui_ctx.clone());
+                    let mut app = SheetApp::new(session, Services::default());
                     if let Some(bridge) = &app_bridge {
-                        bridge.connect(&mut services, inbox.clone(), cc.egui_ctx.clone());
+                        bridge.connect(&mut services, inbox.clone(), app.host_runs.clone(), cc.egui_ctx.clone());
+                        let answer = bridge.clone();
+                        app.host_answer = Some(Box::new(move |id: &serde_json::Value, outcome| answer.post_result(id.as_f64().unwrap_or(0.0), outcome)));
                     }
-                    let mut app = SheetApp::new(session, services);
+                    app.services = services;
                     app.ui.system_theme = true;
                     // Follow the browser's language, except a CJK one: the web build has no system
                     // CJK fonts (none are bundled), so that interface would render as tofu.
@@ -77,12 +81,10 @@ pub fn start() {
                     SheetApp::setup_context_for_language(&cc.egui_ctx, false, app.ui.language);
                     if let Some(bridge) = &app_bridge {
                         prefs.keep_user_name(app.session.prefs.user_name.clone());
-                        if let Some(author) = query_param("author") {
-                            crate::host::Bridge::set_author(&mut app, &author);
-                        }
                         bridge.post_ready();
                     }
-                    Ok(Box::new(WebShell { app, inbox, bridge: app_bridge, prefs }))
+                    let collab = app_bridge.clone().map(crate::collab::Collab::new);
+                    Ok(Box::new(WebShell { app, inbox, bridge: app_bridge, prefs, collab }))
                 }),
             )
             .await;
@@ -92,7 +94,7 @@ pub fn start() {
         if let Some(el) = document.get_element_by_id(LOADING_ID) {
             match result {
                 Ok(()) => el.remove(),
-                Err(e) => el.set_inner_html(&format!("<p>GridCraft failed to start: {e:?}</p><p>A browser with WebGPU or WebGL2 is required.</p>")),
+                Err(e) => el.set_inner_html(&format!("<p>Sheets failed to start: {e:?}</p><p>A browser with WebGPU or WebGL2 is required.</p>")),
             }
         }
     });
@@ -102,15 +104,13 @@ fn query() -> String {
     web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default()
 }
 
-fn query_param(key: &str) -> Option<String> {
-    web_sys::UrlSearchParams::new_with_str(&query()).ok()?.get(key)
-}
-
 struct WebShell {
     app: SheetApp,
     inbox: Inbox,
     bridge: Option<crate::host::Bridge>,
     prefs: crate::prefs::PrefsSync,
+    /// Live editing through the host (`collab`), when framed by it.
+    collab: Option<crate::collab::Collab>,
 }
 
 fn local_storage() -> Option<web_sys::Storage> {
@@ -139,7 +139,13 @@ impl eframe::App for WebShell {
                 }
             });
         }
+        if let Some(collab) = self.collab.as_mut() {
+            collab.pre(&self.app);
+        }
         self.app.logic(ctx);
+        if let Some(collab) = self.collab.as_mut() {
+            collab.post(&mut self.app);
+        }
         // Store changed preferences straight away: a reload or closed tab runs no exit code (#1562).
         let changed = self.prefs.changed(&self.app);
         if !changed.is_empty() {

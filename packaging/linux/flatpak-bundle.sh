@@ -11,12 +11,12 @@
 # `appstreamcli compose`; the freedesktop runtime and SDK named in the manifest are
 # installed per-user from Flathub. Unless --no-test, the bundle is then installed per-user and
 # `gridcraft-cli --version` is run inside the sandbox as a smoke test.
-# Manifest: packaging/linux/flatpak/ai.storyteller.gridcraft.bundle.yml.
+# Manifest: packaging/linux/flatpak/one.wkspace.sheets.bundle.yml.
 set -euo pipefail
 # shellcheck source=../env.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
 HERE="$ROOT/packaging/linux"
-APP_ID=ai.storyteller.gridcraft
+APP_ID=one.wkspace.sheets
 FLATHUB=https://dl.flathub.org/repo/flathub.flatpakrepo
 
 TEST=1

@@ -6,7 +6,7 @@ const NOT_OBJECTS: [&str; 4] = ["\"[1,2]\"", "\"7\"", "\"true\"", "\"\"\"hi\"\"\
 fn with_name(name: &str, refers_to: &str) -> Session {
     let mut s = Session::new();
     s.new_workbook();
-    // `force`: the name commands refuse GridCraft's own data names otherwise.
+    // `force`: the name commands refuse Sheets's own data names otherwise.
     s.execute("formulas.defineName", json!({"name": name, "refersTo": refers_to, "force": true})).unwrap();
     s
 }

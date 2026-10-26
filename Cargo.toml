@@ -24,6 +24,7 @@ gridcraft-engine = { path = "crates/engine" }
 gridcraft-ui-egui = { path = "crates/ui-egui" }
 gridcraft-mcp = { path = "crates/mcp" }
 gridcraft-pdf = { path = "crates/pdf" }
+gridcraft-collab = { path = "crates/collab" }
 
 # foundation
 thiserror = "2"
@@ -79,3 +80,12 @@ opt-level = 3
 lto = "thin"
 codegen-units = 16
 debug = 0
+
+# OneOS: the web/WASM build (`gridcraft-web`) is served as a static asset (25 MiB per file at most) and loaded over
+# the network, so it is built for size. Not used for the desktop app.
+[profile.web-release]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"

@@ -1,0 +1,19 @@
+[package]
+name = "gridcraft-collab-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "The collaboration shim compiled for node (wasm-bindgen), so OneOS can test two windows converging through its real CRDT engine"
+
+# No workspace lints: the wasm-bindgen macros expand to code the workspace's `unsafe_code = "forbid"` refuses.
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+gridcraft-core = { workspace = true }
+gridcraft-model = { workspace = true }
+gridcraft-collab = { workspace = true }
+serde_json = { workspace = true }
+wasm-bindgen = "0.2"

@@ -1562,6 +1562,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "gridcraft-collab"
+version = "0.11.1"
+dependencies = [
+ "gridcraft-core",
+ "gridcraft-model",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "gridcraft-collab-node"
+version = "0.11.1"
+dependencies = [
+ "gridcraft-collab",
+ "gridcraft-core",
+ "gridcraft-model",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "gridcraft-core"
 version = "0.11.1"
 dependencies = [
@@ -1670,6 +1692,7 @@ version = "0.11.1"
 dependencies = [
  "eframe",
  "egui",
+ "gridcraft-collab",
  "gridcraft-engine",
  "gridcraft-ui-egui",
  "js-sys",

@@ -18,7 +18,7 @@ set -euo pipefail
 # shellcheck source=../env.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
 HERE="$ROOT/packaging/linux"
-APP_ID=ai.storyteller.gridcraft
+APP_ID=one.wkspace.sheets
 
 SKIP_BUILD=0
 FORMATS="appimage deb rpm tar"

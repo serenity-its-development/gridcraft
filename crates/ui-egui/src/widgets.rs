@@ -16,7 +16,7 @@ fn tr<'a>(ui: &Ui, text: &'a str) -> &'a str {
 }
 
 /// Keyboard shortcuts shown after a ribbon tooltip's command name: Excel for Mac's on macOS,
-/// Excel for Windows' elsewhere (each one GridCraft binds). Only the name is translated.
+/// Excel for Windows' elsewhere (each one Sheets binds). Only the name is translated.
 const TOOLTIP_SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Save", "⌘S", "Ctrl+S"),
     ("Undo", "⌘Z", "Ctrl+Z"),

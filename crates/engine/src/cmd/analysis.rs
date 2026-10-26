@@ -5,7 +5,7 @@
 //! Every tool is one `tool` value of `data.analysisToolPak`. Distribution values (t, F) come
 //! from the worksheet functions (`T.DIST.2T`, `F.DIST.RT`, `T.INV.2T`…), so the reports agree
 //! with the formulas a user would write. Layouts follow Microsoft's public description of the
-//! tools (row labels and section titles); exact spacing is GridCraft's reading of it.
+//! tools (row labels and section titles); exact spacing is Sheets's reading of it.
 
 use std::collections::{BTreeMap, HashMap};
 

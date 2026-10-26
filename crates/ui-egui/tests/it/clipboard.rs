@@ -152,7 +152,7 @@ fn clicking_the_ribbon_paste_button_or_its_menu_does_not_freeze() {
         let mut h = harness(Services::default());
         h.state_mut().run("edit.copy", json!({"range": "A1:B2"})).unwrap();
         h.state_mut().run("selection.set", json!({"cell": "D4"})).unwrap();
-        // No host clipboard here (as on the web): GridCraft's own copy is pasted.
+        // No host clipboard here (as on the web): Sheets's own copy is pasted.
         h.get_by_role_and_label(Role::Button, "Paste").click();
         h.run_steps(3);
         assert_eq!(cell(&h, "D4"), Some(Value::from("Name")));
@@ -216,7 +216,7 @@ fn ribbon_paste_pastes_the_system_clipboard_like_cmd_v() {
     assert_eq!(value_at(&h, "E5"), Some(Value::number(2.0)));
     assert!(h.state().message.is_none(), "{:?}", h.state().message);
 
-    // The clipboard text is GridCraft's own copy: the copy is pasted with its formulas.
+    // The clipboard text is Sheets's own copy: the copy is pasted with its formulas.
     h.state_mut().run("cell.set", json!({"cell": "A3", "input": "=B2*2"})).unwrap();
     let copied = h.state_mut().run("edit.copy", json!({"range": "A3"})).unwrap();
     clipboard.borrow_mut().0 = copied["text"].as_str().unwrap().to_string();
@@ -226,7 +226,7 @@ fn ribbon_paste_pastes_the_system_clipboard_like_cmd_v() {
     let sh = h.state().session.active().unwrap().wb.active().unwrap();
     assert_eq!(sh.cell(CellRef::parse("B9").unwrap()).unwrap().formula.as_ref().unwrap().text, "C8*2");
 
-    // Nothing on the system clipboard (an image, say): GridCraft's own copy is pasted.
+    // Nothing on the system clipboard (an image, say): Sheets's own copy is pasted.
     clipboard.borrow_mut().0.clear();
     h.state_mut().run("selection.set", json!({"cell": "B12"})).unwrap();
     h.get_by_role_and_label(Role::Button, "Paste").click();

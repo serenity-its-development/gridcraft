@@ -1,0 +1,16 @@
+[package]
+name = "gridcraft-collab"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Sheets collaboration shim: the workbook as the host's shared operations (sheets, row and column ids, cells, styles by content)"
+
+[lints]
+workspace = true
+
+[dependencies]
+gridcraft-core = { workspace = true }
+gridcraft-model = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }

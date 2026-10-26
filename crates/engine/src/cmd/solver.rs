@@ -7,7 +7,7 @@
 //! - **Simplex LP**: the model is linearised from `n + 1` evaluations and checked for linearity
 //!   at one more point; then a dense two-phase simplex (Dantzig's rule, Bland's rule when it
 //!   stalls) solves it exactly. Integer and binary constraints use depth-first branch and bound.
-//! - **GRG Nonlinear** (the name Excel's dialog uses): GridCraft's method is *not* a generalised
+//! - **GRG Nonlinear** (the name Excel's dialog uses): Sheets's method is *not* a generalised
 //!   reduced gradient. It is an augmented-Lagrangian method (Powell–Hestenes–Rockafellar) whose
 //!   inner problems are solved by projected gradient descent with Barzilai–Borwein steps and an
 //!   Armijo line search, on central-difference gradients. Variable bounds are kept by
@@ -1700,7 +1700,7 @@ struct ReportInput<'a> {
 }
 
 fn title(out: &mut Lines, kind: ReportKind, sheet: &str) -> u32 {
-    out.push((0, 0, Value::text(format!("GridCraft {} Report", kind.title())), true));
+    out.push((0, 0, Value::text(format!("Sheets {} Report", kind.title())), true));
     out.push((1, 0, Value::text(format!("Worksheet: {sheet}")), false));
     3
 }
@@ -2352,7 +2352,7 @@ mod tests {
         assert_eq!(d.wb.active().unwrap().name, "Sheet1", "the model's sheet stays active");
         assert_eq!(saved(&s), "solver_opt", "the saved model follows its sheet");
         let a = "Answer Report 1";
-        assert_eq!(at(&s, a, "A1"), Value::text("GridCraft Answer Report"));
+        assert_eq!(at(&s, a, "A1"), Value::text("Sheets Answer Report"));
         // Objective: $D$6 "Profit Used", from 0 to 36.
         let r = row_of(&s, a, "$D$6");
         assert_eq!(at(&s, a, &format!("C{}", r + 1)), Value::text("Profit Used"));

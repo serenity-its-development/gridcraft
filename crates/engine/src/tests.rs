@@ -331,6 +331,64 @@ fn undo_redo() {
 }
 
 #[test]
+fn live_editing_leaves_undo_and_redo_to_the_room() {
+    // OneOS: while the workbook is a shared document, Undo and Redo only ask the host (the session's snapshots would also take back
+    // what other people typed), and are available even though this session has no history of its own.
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "A1", "input": "1"})).unwrap();
+    s.collab_undo = true;
+    s.execute("edit.undo", json!({"steps": 2})).unwrap();
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.collab_undo_requests, vec![true, true, false]);
+    assert_eq!(v(&s, "A1"), Value::Number(1.0), "the session's own history was left alone");
+    assert_eq!(s.doc().unwrap().undo.len(), 1);
+    let mut fresh = Session::new();
+    fresh.new_workbook();
+    fresh.collab_undo = true;
+    assert!(fresh.execute("edit.undo", json!({})).is_ok(), "available with no history of its own");
+}
+
+#[test]
+fn a_workbook_open_to_view_refuses_every_command_that_changes_it() {
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "A1", "input": "7"})).unwrap();
+    s.view_only = true;
+    let e = s.execute("cell.set", json!({"cell": "A1", "input": "8"})).unwrap_err();
+    assert!(e.to_string().contains("open to view"), "{e}");
+    assert!(s.execute("home.bold", json!({})).is_err());
+    assert_eq!(v(&s, "A1"), Value::Number(7.0));
+    // Looking is not changing.
+    assert!(s.execute("cell.get", json!({"cell": "A1"})).is_ok());
+    assert!(s.execute("selection.set", json!({"cell": "B2"})).is_ok());
+}
+
+#[test]
+fn a_change_the_room_made_is_no_undo_step_recalculates_and_keeps_a_clean_workbook_clean() {
+    use std::sync::Arc;
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "A1", "input": "1"})).unwrap();
+    s.execute("cell.set", json!({"cell": "B1", "input": "=A1*10"})).unwrap();
+    assert_eq!(v(&s, "B1"), Value::Number(10.0));
+    s.doc_mut().unwrap().saved = s.doc().unwrap().wb.clone();
+    let undo_before = s.doc().unwrap().undo.len();
+    s.change_remote(|wb| {
+        let sheet = Arc::make_mut(&mut wb.sheets[0]);
+        sheet.cells.set(CellRef::parse("A1").unwrap(), gridcraft_model::Cell::value(Value::Number(5.0)));
+        crate::RemoteChange { structure: false, cells: vec![(0, CellRef::parse("A1").unwrap())] }
+    });
+    assert_eq!(v(&s, "B1"), Value::Number(50.0), "what reads the changed cell was recalculated");
+    assert_eq!(s.doc().unwrap().undo.len(), undo_before, "the room's change is not this person's undo step");
+    assert!(!s.doc().unwrap().is_dirty(), "a clean workbook stays clean");
+    // A workbook the person has edited stays dirty.
+    s.execute("cell.set", json!({"cell": "C1", "input": "x"})).unwrap();
+    s.change_remote(|wb| {
+        Arc::make_mut(&mut wb.sheets[0]).cells.set(CellRef::parse("A2").unwrap(), gridcraft_model::Cell::value(Value::Number(1.0)));
+        crate::RemoteChange { structure: true, cells: vec![] }
+    });
+    assert!(s.doc().unwrap().is_dirty());
+}
+
+#[test]
 fn redo_selects_the_redone_cell() {
     // #1855: type into A1..A3, click A1, undo, redo: the selection follows the edit to A3.
     let mut s = s();

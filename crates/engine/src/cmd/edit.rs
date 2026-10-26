@@ -798,6 +798,10 @@ fn coalesce(cells: &[CellRef]) -> Vec<RangeRef> {
 
 fn undo(s: &mut Session, p: &Json) -> Result<Json> {
     let steps = u32_param(p, "steps").unwrap_or(1).max(1);
+    if s.collab_undo {
+        s.collab_undo_requests.extend(std::iter::repeat_n(true, steps as usize));
+        return Ok(json!({"undone": "shared change"}));
+    }
     let d = s.doc_mut()?;
     let mut label = String::new();
     let now = d.wb.clone();
@@ -819,6 +823,10 @@ fn undo(s: &mut Session, p: &Json) -> Result<Json> {
 
 fn redo(s: &mut Session, p: &Json) -> Result<Json> {
     let steps = u32_param(p, "steps").unwrap_or(1).max(1);
+    if s.collab_undo {
+        s.collab_undo_requests.extend(std::iter::repeat_n(false, steps as usize));
+        return Ok(json!({"redone": "shared change"}));
+    }
     let d = s.doc_mut()?;
     let mut label = String::new();
     let now = d.wb.clone();
