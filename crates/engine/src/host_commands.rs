@@ -168,7 +168,12 @@ pub fn run_batch(host: &mut impl BatchHost, params: &Value) -> Result<(Value, Op
         if !ASSISTANT_COMMANDS.contains(&name) && !ARGUMENT_COMMANDS.contains(&name) {
             return Err(format!("command-not-allowed: Sheets does not allow the command '{name}' -- nothing was run"));
         }
-        named.push((name, step.get("args").cloned().unwrap_or_else(|| json!({}))));
+        let args = step.get("args").cloned().unwrap_or_else(|| json!({}));
+        // `force` lifts a guard the person's own dialog keeps (a name Sheets keeps its own data in): it is the person's to give.
+        if args.get("force").is_some_and(|f| !matches!(f, Value::Bool(false) | Value::Null)) {
+            return Err(format!("argument-not-allowed: step {} ({name}) names `force`, which only the person may give -- nothing was run", named.len() + 1));
+        }
+        named.push((name, args));
     }
     if host.session().active().is_none() {
         return Err("no-document: no workbook is open in this window".into());
@@ -292,6 +297,13 @@ mod tests {
         let e = run(&mut h, "x", json!([{"name": "cell.set", "args": {"cell": "A1", "input": "1"}}, {"name": "pivot.calculatedField", "args": {}}])).unwrap_err();
         assert!(e.starts_with("step-failed: step 2 (pivot.calculatedField)"), "{e}");
         assert_eq!(h.0.run("sheet.read", json!({})).unwrap()["values"], json!([]));
+    }
+
+    #[test]
+    fn force_is_the_persons_to_give() {
+        let mut h = book();
+        let e = run(&mut h, "x", json!([{"name": "formulas.defineName", "args": {"name": "_gc_macro_1_0", "refersTo": "=1", "force": true}}])).unwrap_err();
+        assert!(e.starts_with("argument-not-allowed"), "{e}");
     }
 
     #[test]
