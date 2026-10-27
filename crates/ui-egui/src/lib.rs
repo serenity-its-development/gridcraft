@@ -926,6 +926,31 @@ impl SheetApp {
         Some(self.views.entry(k).or_insert(saved))
     }
 
+    /// Open at where the host's read-only first view was left (OneOS progressive open): the active sheet scrolls so the cell at that
+    /// fraction of the used range is first visible, and the cell holding the selected text (else that first cell) is selected.
+    /// Not an edit. False when the sheet is empty.
+    pub fn open_at_first_view(&mut self, selection: &str, x_fraction: f64, y_fraction: f64) -> bool {
+        let Some((place, scroll)) = self.session.active().and_then(|d| {
+            let sh = d.wb.active()?;
+            let place = gridcraft_engine::first_view::locate(&d.wb, sh, selection, x_fraction, y_fraction)?;
+            let (fr, fc) = sh.freeze.unwrap_or((0, 0));
+            let y = sh.row_top(place.top_left.row.max(fr)) - sh.row_top(fr);
+            let x = sh.col_left(place.top_left.col.max(fc)) - sh.col_left(fc);
+            Some((place, egui::vec2(x.max(0.0) as f32, y.max(0.0) as f32)))
+        }) else {
+            return false;
+        };
+        if let Some(d) = self.session.active_mut() {
+            d.selection = gridcraft_engine::Selection::at(place.cell);
+        }
+        if let Some(v) = self.view_mut() {
+            v.scroll = scroll;
+        }
+        // The place is the one the host said, not the active cell's.
+        self.grid.ensure_visible = false;
+        true
+    }
+
     /// The view a sheet opens with: scrolled to the file's saved first visible cell (`topLeftCell`).
     fn saved_view(&self) -> SheetView {
         let Some(sh) = self.session.active().and_then(|d| d.wb.active()) else { return SheetView::default() };
@@ -1483,4 +1508,42 @@ pub fn now_ms() -> f64 {
 
 pub fn cell(r: u32, c: u32) -> CellRef {
     CellRef::new(r, c)
+}
+
+#[cfg(test)]
+mod first_view_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// OneOS progressive open: the editor opens at the cells the host's read-only first view showed, and that is not an edit.
+    #[test]
+    fn the_editor_opens_at_the_first_views_cells() {
+        let mut s = gridcraft_engine::Session::new();
+        s.new_workbook();
+        let mut app = SheetApp::new(s, Default::default());
+        for r in 1..=200 {
+            app.run("cell.set", json!({"cell": format!("A{r}"), "input": format!("row{r}")})).unwrap();
+        }
+        let before = app.session.active().map(|d| d.wb.clone());
+        assert!(app.open_at_first_view("row150", 0.0, 0.75));
+        let d = app.session.active().unwrap();
+        // The cell holding the selected text is selected; the view starts at 3/4 of the used rows (index 149 of 0..=199).
+        assert_eq!(d.selection.active, CellRef::parse("A150").unwrap());
+        let sh = d.wb.active().unwrap();
+        let top = sh.row_at(sh.row_top(0) + app.view().scroll.y as f64 + 0.01);
+        assert_eq!(top, 149, "the first visible row is the one at three quarters of the used range");
+        assert_eq!(app.session.active().map(|d| d.wb.clone()), before, "opening at a place is not an edit");
+        // An empty selection selects the first visible cell.
+        assert!(app.open_at_first_view("", 0.0, 0.0));
+        assert_eq!(app.session.active().unwrap().selection.active, CellRef::new(0, 0));
+        assert_eq!(app.view().scroll.y, 0.0);
+    }
+
+    #[test]
+    fn an_empty_sheet_has_no_place() {
+        let mut s = gridcraft_engine::Session::new();
+        s.new_workbook();
+        let mut app = SheetApp::new(s, Default::default());
+        assert!(!app.open_at_first_view("x", 0.5, 0.5));
+    }
 }

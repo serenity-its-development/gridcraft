@@ -83,8 +83,9 @@ pub fn start() {
                         prefs.keep_user_name(app.session.prefs.user_name.clone());
                         bridge.post_ready();
                     }
+                    let handoff = app_bridge.clone().map(|bridge| (bridge, crate::handoff::Handoff::new()));
                     let collab = app_bridge.clone().map(crate::collab::Collab::new);
-                    Ok(Box::new(WebShell { app, inbox, bridge: app_bridge, prefs, collab }))
+                    Ok(Box::new(WebShell { app, inbox, bridge: app_bridge, prefs, collab, handoff }))
                 }),
             )
             .await;
@@ -111,6 +112,8 @@ struct WebShell {
     prefs: crate::prefs::PrefsSync,
     /// Live editing through the host (`collab`), when framed by it.
     collab: Option<crate::collab::Collab>,
+    /// The progressive open's hand-over to the host (`craft:opened`, the first view's place, `craft:viewed`), when framed by it.
+    handoff: Option<(crate::host::Bridge, crate::handoff::Handoff<Option<u64>>)>,
 }
 
 fn local_storage() -> Option<web_sys::Storage> {
@@ -139,12 +142,24 @@ impl eframe::App for WebShell {
                 }
             });
         }
+        if let Some((bridge, handoff)) = self.handoff.as_mut() {
+            handoff.before(bridge, self.app.session.active().map(|d| d.uid));
+        }
         if let Some(collab) = self.collab.as_mut() {
             collab.pre(&self.app);
         }
         self.app.logic(ctx);
         if let Some(collab) = self.collab.as_mut() {
             collab.post(&mut self.app);
+        }
+        if let Some((bridge, handoff)) = self.handoff.as_mut() {
+            let app = &mut self.app;
+            let doc = app.session.active().map(|d| d.uid);
+            if handoff.after(bridge, doc, |view| {
+                app.open_at_first_view(&view.selection, view.x_fraction(), view.y_fraction());
+            }) {
+                ctx.request_repaint();
+            }
         }
         // Store changed preferences straight away: a reload or closed tab runs no exit code (#1562).
         let changed = self.prefs.changed(&self.app);
