@@ -106,6 +106,44 @@ pub const ASSISTANT_COMMANDS: &[&str] = &[
     "pivot.changeSource",
     "pivot.refresh",
     "pivot.delete",
+    // Format and edit, on the selection (each runs at once with no arguments; checked one by one against a run).
+    "home.underline",
+    "home.doubleUnderline",
+    "home.subscript",
+    "home.superscript",
+    "home.increaseFontSize",
+    "home.decreaseFontSize",
+    "home.increaseIndent",
+    "home.decreaseIndent",
+    "home.mergeAcross",
+    "home.mergeCenter",
+    "home.lockCell",
+    "home.unhideRows",
+    "home.unhideColumns",
+    "edit.clearAll",
+    "edit.clearComments",
+    "edit.clearHyperlinks",
+    "edit.fillSeries",
+    "data.removeDuplicates",
+    "formulas.autoSum",
+    "formulas.calculateNow",
+    "formulas.calculateSheet",
+    "selection.currentRegion",
+    "selection.row",
+    "selection.column",
+    "sheet.next",
+    "sheet.previous",
+    "data.clearFilter",
+    "data.reapply",
+    "formulas.removeArrows",
+    "review.workbookStatistics",
+    "view.zoom100",
+    "formulas.financial",
+    "formulas.logical",
+    "formulas.text",
+    "formulas.dateTime",
+    "formulas.lookupReference",
+    "formulas.mathTrig",
 ];
 
 /// Commands that only look or move the window (they change nothing a save would keep, or only what the person sees).
@@ -127,6 +165,250 @@ pub const ARGUMENT_COMMANDS: &[&str] = &[
     // Read-only: every PivotTable, and one PivotTable's source fields and layout.
     "pivot.list",
     "pivot.fields",
+];
+
+/// Every command the app has and the assistant may NOT run, with the reason: together with `ASSISTANT_COMMANDS` and `ARGUMENT_COMMANDS` this is the whole command
+/// catalog (a test holds the three to it, so a command can neither be forgotten nor listed twice).
+pub const LEFT_OUT: &[(&str, &[&str])] = &[
+    (
+        "Files and addresses move only through the host: open, save, export, print, close and the like are the host's, never a command id the assistant runs; so are the commands that read a file, a picture, a web address or an outside data source.",
+        &[
+            "file.new",
+            "file.open",
+            "file.save",
+            "file.saveAs",
+            "file.saveBytes",
+            "file.close",
+            "file.exportCsv",
+            "file.exportHtml",
+            "file.properties",
+            "file.options",
+            "insert.picture",
+            "insert.link",
+            "link.open",
+            "data.fromTextCsv",
+            "data.getData",
+            "data.fromTableRange",
+            "data.queriesConnections",
+            "data.refreshAll",
+            "file.exportPdf",
+            "file.print",
+            "file.printPreview",
+        ],
+    ),
+    (
+        "Undo, redo and the history belong to the person: a run is one undo step, and undoing it is theirs.",
+        &["edit.undo", "edit.redo", "history.list"],
+    ),
+    (
+        "The system clipboard is the person's (copy, cut and paste read or write what they hold outside the app), and so is the format painter.",
+        &["edit.copy", "edit.cut", "edit.paste", "edit.pasteSpecial", "edit.clearClipboard", "edit.formatPainter", "home.insertCopiedCells"],
+    ),
+    (
+        "The window, the add-ins and the scripts are the person's, not the workbook's: new and arranged windows, hiding a window, macros and recorded scripts, add-ins, the command list.",
+        &[
+            "window.activate",
+            "app.commands",
+            "view.newWindow",
+            "view.arrangeAll",
+            "view.hideWindow",
+            "view.unhideWindow",
+            "view.switchWindows",
+            "view.macros",
+            "automate.recordActions",
+            "automate.newScript",
+            "automate.allScripts",
+            "automate.runScript",
+            "automate.trustScripts",
+            "automate.deleteScript",
+            "automate.stopAction",
+            "home.addIns",
+        ],
+    ),
+    (
+        "Interactive: it begins a pointer gesture or an editing session (inking, drawing a border, editing a cell in place), which only a person's pointer or keyboard can finish.",
+        &["edit.beginEdit", "home.drawBorder", "draw.pen", "draw.eraser", "draw.lasso", "draw.stroke", "draw.inkToShape"],
+    ),
+    (
+        "Takes arguments whose shape has not yet been checked against a run (a range, a name, a setting), so the assistant does not run it yet; every command that acts at once on the selection, with or without optional arguments, is in the list.",
+        &[
+            "selection.move",
+            "selection.next",
+            "edit.selectAll",
+            "edit.goTo",
+            "edit.goToSpecial",
+            "edit.autoFill",
+            "edit.flashFill",
+            "edit.find",
+            "edit.replace",
+            "home.fontColor",
+            "home.borders",
+            "home.formatCells",
+            "home.justify",
+            "home.shrinkToFit",
+            "home.orientation",
+            "home.numberFormat",
+            "home.cellStyle",
+            "home.rowHeight",
+            "home.columnWidth",
+            "home.defaultWidth",
+            "sheet.moveColumns",
+            "home.insertCells",
+            "home.deleteCells",
+            "sheet.move",
+            "sheet.hide",
+            "sheet.unhide",
+            "home.formatAsTable",
+            "table.totalRow",
+            "table.bandedRows",
+            "table.bandedColumns",
+            "table.headerRow",
+            "table.firstColumn",
+            "table.lastColumn",
+            "table.style",
+            "table.rename",
+            "table.convertToRange",
+            "table.totalFunction",
+            "insert.recommendedCharts",
+            "insert.sparkline",
+            "insert.shape",
+            "insert.icons",
+            "insert.textBox",
+            "shape.setText",
+            "object.delete",
+            "object.move",
+            "object.setAnchorMode",
+            "review.newComment",
+            "review.replyComment",
+            "review.resolveComment",
+            "review.deleteComment",
+            "review.showNote",
+            "insert.symbol",
+            "home.conditionalFormat",
+            "home.clearRules",
+            "home.manageRules",
+            "data.sort",
+            "data.filter",
+            "data.filterBy",
+            "data.textToColumns",
+            "data.validation",
+            "data.validate",
+            "data.circleInvalid",
+            "data.group",
+            "data.ungroup",
+            "data.hideDetail",
+            "data.showDetail",
+            "data.showLevels",
+            "data.outlineSettings",
+            "data.subtotal",
+            "data.flashFill",
+            "formulas.insertFunction",
+            "formulas.functions",
+            "formulas.createFromSelection",
+            "formulas.pasteName",
+            "formulas.tracePrecedents",
+            "formulas.traceDependents",
+            "formulas.selectPrecedents",
+            "formulas.selectDependents",
+            "formulas.showFormulas",
+            "formulas.convertToNumber",
+            "formulas.errorChecking",
+            "formulas.evaluateFormula",
+            "formulas.evaluate",
+            "formulas.calculationOptions",
+            "review.protectSheet",
+            "review.unprotectSheet",
+            "review.protectWorkbook",
+            "review.allowEditRanges",
+            "review.checkAccessibility",
+            "review.previousComment",
+            "review.nextComment",
+            "review.showComments",
+            "review.showAllNotes",
+            "review.convertToComments",
+            "view.freezePanes",
+            "view.gridlines",
+            "view.headings",
+            "view.showZeros",
+            "view.showOutlineSymbols",
+            "view.showObjects",
+            "view.rightToLeft",
+            "view.zoom",
+            "view.formulaBar",
+            "view.statusBar",
+            "view.zoomToSelection",
+            "pageLayout.orientation",
+            "pageLayout.size",
+            "pageLayout.margins",
+            "pageLayout.printArea",
+            "pageLayout.printTitles",
+            "pageLayout.scaleToFit",
+            "pageLayout.printGridlines",
+            "pageLayout.printHeadings",
+            "pageLayout.breaks",
+            "pageLayout.headerFooter",
+            "pageLayout.theme",
+            "selection.stats",
+            "chart.formatSelection",
+            "chart.shapeFill",
+            "chart.shapeOutline",
+            "arrange.bringForward",
+            "arrange.sendBackward",
+            "arrange.selectionPane",
+            "arrange.align",
+            "arrange.group",
+            "arrange.rotate",
+            "view.normal",
+            "view.pageLayout",
+            "view.pageBreakPreview",
+            "view.customViews",
+            "view.split",
+            "view.ruler",
+            "table.resize",
+            "table.removeDuplicates",
+            "insert.checkbox",
+            "cell.toggleCheckbox",
+            "pageLayout.themeColors",
+            "pageLayout.themeFonts",
+            "pageLayout.themeEffects",
+            "pageLayout.background",
+            "home.newCellStyle",
+            "formulas.recentlyUsed",
+            "formulas.moreFunctions",
+            "formulas.useInFormula",
+            "formulas.watchWindow",
+            "review.spelling",
+            "review.addToDictionary",
+            "review.changeSpelling",
+            "review.thesaurus",
+            "data.solver",
+            "data.solverReport",
+            "insert.recommendedPivotTables",
+            "table.summarizePivot",
+            "pivot.fieldList",
+            "pivot.collapse",
+            "pivot.showDetails",
+            "pivot.options",
+            "insert.slicer",
+            "table.insertSlicer",
+            "slicer.toggle",
+            "slicer.selectAll",
+            "slicer.clear",
+            "slicer.delete",
+            "data.goalSeek",
+            "data.scenarioManager",
+            "data.scenarioAdd",
+            "data.scenarioShow",
+            "data.scenarioDelete",
+            "data.scenarioSummary",
+            "data.dataTable",
+            "data.advancedFilter",
+            "data.consolidate",
+            "data.forecastSheet",
+            "data.analysisToolPak",
+            "pageLayout.pageSetup",
+        ],
+    ),
 ];
 
 /// Every command id a run may name, in the order the host's registry declares them.
@@ -171,7 +453,10 @@ pub fn run_batch(host: &mut impl BatchHost, params: &Value) -> Result<(Value, Op
         let args = step.get("args").cloned().unwrap_or_else(|| json!({}));
         // `force` lifts a guard the person's own dialog keeps (a name Sheets keeps its own data in): it is the person's to give.
         if args.get("force").is_some_and(|f| !matches!(f, Value::Bool(false) | Value::Null)) {
-            return Err(format!("argument-not-allowed: step {} ({name}) names `force`, which only the person may give -- nothing was run", named.len() + 1));
+            return Err(format!(
+                "argument-not-allowed: step {} ({name}) names `force`, which only the person may give -- nothing was run",
+                named.len() + 1
+            ));
         }
         named.push((name, args));
     }
@@ -294,7 +579,8 @@ mod tests {
     #[test]
     fn a_step_that_needs_a_dialog_is_refused_and_the_run_is_taken_back() {
         let mut h = book();
-        let e = run(&mut h, "x", json!([{"name": "cell.set", "args": {"cell": "A1", "input": "1"}}, {"name": "pivot.calculatedField", "args": {}}])).unwrap_err();
+        let e = run(&mut h, "x", json!([{"name": "cell.set", "args": {"cell": "A1", "input": "1"}}, {"name": "pivot.calculatedField", "args": {}}]))
+            .unwrap_err();
         assert!(e.starts_with("step-failed: step 2 (pivot.calculatedField)"), "{e}");
         assert_eq!(h.0.run("sheet.read", json!({})).unwrap()["values"], json!([]));
     }
@@ -302,7 +588,8 @@ mod tests {
     #[test]
     fn force_is_the_persons_to_give() {
         let mut h = book();
-        let e = run(&mut h, "x", json!([{"name": "formulas.defineName", "args": {"name": "_gc_macro_1_0", "refersTo": "=1", "force": true}}])).unwrap_err();
+        let e = run(&mut h, "x", json!([{"name": "formulas.defineName", "args": {"name": "_gc_macro_1_0", "refersTo": "=1", "force": true}}]))
+            .unwrap_err();
         assert!(e.starts_with("argument-not-allowed"), "{e}");
     }
 
@@ -313,6 +600,54 @@ mod tests {
             let e = run(&mut h, "x", json!([{"name": "cell.set", "args": {"cell": "A1", "input": "1"}}, {"name": bad}])).unwrap_err();
             assert!(e.starts_with("command-not-allowed"), "{e}");
         }
+        assert_eq!(h.0.run("sheet.read", json!({})).unwrap()["values"], json!([]));
+    }
+
+    /// Every command id the catalog has.
+    fn universe() -> Vec<String> {
+        let mut s = Session::new();
+        s.new_workbook();
+        s.commands().iter().map(|c| c.id.to_string()).collect()
+    }
+
+    #[test]
+    fn the_allow_list_and_the_commands_left_out_are_the_whole_catalog_with_nothing_twice() {
+        let all = universe();
+        let mut seen = std::collections::HashSet::new();
+        for id in allowed() {
+            assert!(all.iter().any(|c| c == id), "{id} is not a command of the app");
+            assert!(seen.insert(id.to_string()), "{id} is listed twice");
+        }
+        for (reason, ids) in LEFT_OUT {
+            assert!(reason.len() > 20, "a reason: {reason}");
+            for id in *ids {
+                assert!(all.iter().any(|c| c == id), "{id} is left out but is not a command of the app");
+                assert!(seen.insert(id.to_string()), "{id} is both allowed and left out, or left out twice");
+            }
+        }
+        let missing: Vec<&String> = all.iter().filter(|c| !seen.contains(c.as_str())).collect();
+        assert!(missing.is_empty(), "commands neither allowed nor left out (with a reason): {missing:?}");
+    }
+
+    #[test]
+    fn the_commands_that_act_at_once_run_from_a_run_as_one_undo_step() {
+        let mut h = book();
+        let (_, label) = run(
+            &mut h,
+            "Tidy",
+            json!([
+                {"name": "range.setValues", "args": {"range": "A1", "values": [["a", 1], ["a", 1], ["b", 2]]}},
+                {"name": "selection.set", "args": {"range": "A1:B3"}},
+                {"name": "home.underline"},
+                {"name": "home.increaseFontSize"},
+                {"name": "data.removeDuplicates"},
+            ]),
+        )
+        .expect("the run");
+        assert_eq!(label.as_deref(), Some("Tidy"));
+        let grid = h.0.run("sheet.read", json!({"range": "A1:B3"})).unwrap();
+        assert_eq!(grid["values"][1], json!(["b", 2.0]));
+        h.0.run("edit.undo", json!({})).unwrap();
         assert_eq!(h.0.run("sheet.read", json!({})).unwrap()["values"], json!([]));
     }
 }
