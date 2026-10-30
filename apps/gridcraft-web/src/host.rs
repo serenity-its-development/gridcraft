@@ -33,8 +33,9 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 
 /// Saving one of these hands the whole workbook to the host, which stores it: the workbook counts as saved under that name,
-/// as it would after Save on the desktop.
-const WORKBOOK_EXTS: &[&str] = &["xlsx"];
+/// as it would after Save on the desktop. A CSV is saved back as CSV (its separator, encoding, byte-order mark and line ending
+/// kept), or refused by name when it holds what CSV can't (ruling 2026-10-31).
+const WORKBOOK_EXTS: &[&str] = &["xlsx", "csv"];
 
 /// What the host's last `craft:open` said.
 #[derive(Clone, Default)]

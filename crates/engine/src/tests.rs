@@ -4486,7 +4486,7 @@ fn csv_as_text_keeps_identifier_columns_as_written() {
         assert_eq!(value(&mut s, cell), json!(text), "{cell}");
     }
     let saved = s.execute("file.saveBytes", json!({"format": "csv"})).unwrap();
-    assert_eq!(crate::io::base64_decode(saved["base64"].as_str().unwrap()).unwrap(), csv.replace('\n', "\r\n").as_bytes());
+    assert_eq!(crate::io::base64_decode(saved["base64"].as_str().unwrap()).unwrap(), csv.as_bytes());
 }
 
 /// Open a workbook by path, and `CELL("filename")` names the file it came from, as Excel does;

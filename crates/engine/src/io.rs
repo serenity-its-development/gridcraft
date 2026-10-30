@@ -174,7 +174,8 @@ fn open_plain(name: &str, bytes: &[u8], csv_as_text: bool) -> Result<(Workbook, 
         Some(FileKind::Tsv) => {
             let opts = gridcraft_xlsx::CsvOptions { delimiter: b'\t', parse_values: !csv_as_text, ..Default::default() };
             let mut wb = gridcraft_xlsx::read_csv(bytes, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
-            // Tab is what makes it a .tsv/.txt; saved as .csv it gets the CSV default.
+            // Tab is what makes it a .tsv/.txt; saved as .csv it gets the CSV default. Its
+            // encoding, byte-order mark and line ending are kept either way.
             wb.csv_delimiter = None;
             rename_first_sheet(&mut wb, name);
             Ok((wb, vec![]))
@@ -247,9 +248,17 @@ pub fn save_bytes_as(wb: &Workbook, path: &str, kind: FileKind) -> Result<Vec<u8
         }
         FileKind::Xlsb => Err(EngineError::Other("XLSB is supported for data import only. Save as .xlsx or another supported export format.".into())),
         FileKind::Ods => Err(EngineError::Other("ODS is supported for data import only. Save as .xlsx or another supported export format.".into())),
-        // A workbook read from CSV keeps the separator it was read with (a `;` file stays `;`).
-        FileKind::Csv => wb.sheet(sheet).map(|sh| csv(wb, sh, wb.csv_delimiter.unwrap_or(b','))).transpose().map(Option::unwrap_or_default),
-        FileKind::Tsv => wb.sheet(sheet).map(|sh| csv(wb, sh, b'\t')).transpose().map(Option::unwrap_or_default),
+        // A workbook read from CSV keeps the separator it was read with (a `;` file stays `;`), and
+        // the encoding, byte-order mark and line ending. What CSV can't hold is refused by name,
+        // never dropped (ruling 2026-10-31), so a CSV is saved back as CSV, never converted.
+        FileKind::Csv => {
+            refuse_what_delimited_text_cannot_hold(wb, path, "CSV")?;
+            wb.sheet(sheet).map(|sh| csv(wb, sh, wb.csv_delimiter.unwrap_or(b','))).transpose().map(Option::unwrap_or_default)
+        }
+        FileKind::Tsv => {
+            refuse_what_delimited_text_cannot_hold(wb, path, "tab-separated text")?;
+            wb.sheet(sheet).map(|sh| csv(wb, sh, b'\t')).transpose().map(Option::unwrap_or_default)
+        }
         FileKind::Json => serde_json::to_vec_pretty(wb).map_err(|e| EngineError::Other(e.to_string())),
         FileKind::Html => to_html(wb, sheet).map(String::into_bytes),
     }
@@ -275,11 +284,146 @@ pub fn source_path(path: &str) -> Option<std::path::PathBuf> {
     std::path::absolute(path).ok()
 }
 
+/// How many places to name before "and N more".
+const NAMED_PLACES: usize = 3;
+
+/// `places` named, at most [`NAMED_PLACES`] of them, then how many more there are.
+fn places(places: &[String]) -> String {
+    let mut out = places.iter().take(NAMED_PLACES).cloned().collect::<Vec<_>>().join(", ");
+    if places.len() > NAMED_PLACES {
+        let _ = write!(out, " and {} more", places.len() - NAMED_PLACES);
+    }
+    out
+}
+
+/// What the workbook holds that a CSV (or tab-separated) file can't, each named with where it is.
+/// A delimited file holds one sheet of cell text, the text as displayed (number formats applied).
+/// Everything else would be lost by saving, so it is listed for refusal. View state (column
+/// widths, row heights, freeze panes, zoom, gridlines, print setup, the selection) is not listed:
+/// it is how the file is being looked at, not what it holds.
+pub fn what_delimited_text_cannot_hold(wb: &Workbook) -> Vec<String> {
+    let mut lost = Vec::new();
+    let sheets = wb.sheets.len() + wb.preserved.as_ref().map_or(0, |p| p.sheets.len());
+    if sheets > 1 {
+        let names: Vec<String> = wb.sheets.iter().map(|sh| sh.name.clone()).collect();
+        lost.push(format!("{sheets} sheets ({}), where it holds one", places(&names)));
+    }
+    let default_style = wb.styles.get(gridcraft_model::StyleId::DEFAULT);
+    let formatted = |id: gridcraft_model::StyleId| {
+        let st = wb.styles.get(id);
+        // The number format is written: the text goes out as displayed.
+        gridcraft_model::Style { num_fmt: default_style.num_fmt.clone(), ..st.clone() } != *default_style
+    };
+    let one = wb.sheets.len() == 1;
+    for sh in &wb.sheets {
+        let at = |c: String| if one { c } else { format!("{}!{c}", sh.name) };
+        let mut formulas = Vec::new();
+        let mut styled = Vec::new();
+        for (c, cell) in sh.cells.iter() {
+            if cell.formula.is_some() {
+                formulas.push(at(c.a1()));
+            }
+            if formatted(cell.style) {
+                styled.push(at(c.a1()));
+            }
+        }
+        for (what, line) in [("row", &sh.rows), ("column", &sh.cols)] {
+            for (i, info) in line {
+                let name = if what == "row" { (i + 1).to_string() } else { gridcraft_core::col_to_letters(*i) };
+                if info.style.is_some_and(formatted) {
+                    styled.push(at(format!("{what} {name}")));
+                }
+            }
+        }
+        if !formulas.is_empty() {
+            lost.push(format!("formulas, which it would replace with their results ({})", places(&formulas)));
+        }
+        if !styled.is_empty() {
+            lost.push(format!("cell formatting ({})", places(&styled)));
+        }
+        let hidden: Vec<String> = (sh.rows.iter().map(|(i, l)| (l, (i + 1).to_string())))
+            .chain(sh.cols.iter().map(|(i, l)| (l, gridcraft_core::col_to_letters(*i))))
+            .filter(|(l, _)| l.hidden || l.outline > 0)
+            .map(|(_, n)| at(n))
+            .collect();
+        if !hidden.is_empty() {
+            lost.push(format!("hidden or grouped rows and columns ({})", places(&hidden)));
+        }
+        let cells = |what: &str, refs: Vec<CellRef>| {
+            (!refs.is_empty()).then(|| format!("{what} ({})", places(&refs.iter().map(|c| at(c.a1())).collect::<Vec<_>>())))
+        };
+        lost.extend(cells("comments", sh.comments.keys().copied().collect()));
+        lost.extend(cells("hyperlinks", sh.hyperlinks.keys().copied().collect()));
+        lost.extend(cells("pictures in cells", sh.cell_pictures.keys().copied().collect()));
+        let counted = [
+            ("merged cells", sh.merges.len()),
+            ("conditional formats", sh.cond_formats.len()),
+            ("data validation", sh.validations.len()),
+            ("tables", sh.tables.len()),
+            ("a filter", usize::from(sh.autofilter.is_some())),
+            ("charts", sh.charts.len()),
+            ("images", sh.images.len()),
+            ("shapes", sh.shapes.len()),
+            ("sparklines", sh.sparklines.len()),
+            ("slicers", sh.slicers.len()),
+            ("pivot tables", sh.pivots.len()),
+            ("sheet protection", usize::from(sh.protection.is_some())),
+            ("editable ranges", sh.edit_ranges.len()),
+        ];
+        for (what, n) in counted.into_iter().chain(kept_content(sh.preserved.as_deref())) {
+            if n > 0 {
+                lost.push(if one { what.to_string() } else { format!("{what} on {}", sh.name) });
+            }
+        }
+    }
+    if !wb.names.is_empty() {
+        lost.push(format!("named ranges ({})", places(&wb.names.iter().map(|n| n.name.clone()).collect::<Vec<_>>())));
+    }
+    if wb.vba_project.is_some() {
+        lost.push("macros".into());
+    }
+    if wb.protected_structure {
+        lost.push("workbook protection".into());
+    }
+    lost.extend(kept_content(wb.preserved.as_deref()).filter(|(_, n)| *n > 0).map(|(what, _)| what.to_string()));
+    lost
+}
+
+/// The content among what was kept unmodelled from an .xlsx (see [`gridcraft_model::Preserved`]),
+/// each kind with how many. Bookkeeping Excel wants back (`fileVersion`, calculation features) and
+/// print setup (`pageSetup`, header and footer pictures) are not content.
+fn kept_content(p: Option<&gridcraft_model::Preserved>) -> impl Iterator<Item = (&'static str, usize)> + '_ {
+    let slot = move |name: &str| p.map_or(0, |p| p.elements.iter().filter(|e| e.slot == name).count());
+    [
+        ("links to external workbooks", slot("externalReferences")),
+        ("embedded objects", slot("oleObjects")),
+        ("form controls", slot("controls")),
+        ("a background picture", slot("picture")),
+        ("chart sheets", p.map_or(0, |p| p.sheets.len())),
+    ]
+    .into_iter()
+}
+
+/// Refuses to save `wb` as delimited text when it holds anything that format can't, naming each.
+fn refuse_what_delimited_text_cannot_hold(wb: &Workbook, path: &str, format: &str) -> Result<()> {
+    let lost = what_delimited_text_cannot_hold(wb);
+    if lost.is_empty() {
+        return Ok(());
+    }
+    let name = std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path);
+    Err(EngineError::Other(format!(
+        "We can't save '{name}' as {format}: it holds what {format} can't, which would be lost: {}. \
+         Save it as .xlsx to keep them, or remove them and save again.",
+        lost.join("; ")
+    )))
+}
+
 /// Save As CSV/Text writes "the text and values as they are displayed in cells" with "all
 /// characters in each cell" (Microsoft Support, *Excel formatting and features that are not
 /// transferred to other file formats*): number formats applied, never column-width `#####`.
 fn csv(wb: &Workbook, sh: &Sheet, delimiter: u8) -> Result<Vec<u8>> {
-    gridcraft_xlsx::write_csv(sh, delimiter, |c| {
+    let how = wb.csv_text.unwrap_or_default();
+    gridcraft_xlsx::write_csv_text(sh, delimiter, &how, |c| {
         // General's grid-width formatting rounds large identifiers to scientific notation.
         // Delimited files have no column width, so preserve the whole numeric value instead.
         if wb.styles.get(sh.style_id(c)).num_fmt.as_str().eq_ignore_ascii_case("General")
@@ -1131,6 +1275,114 @@ mod tests {
         assert_eq!(String::from_utf8(save_bytes(&wb, "tabs.csv").unwrap()).unwrap(), tabs);
     }
 
+    /// Saves `bytes` opened as `name` back under the same name: an unchanged CSV is the same bytes.
+    fn round_trip(name: &str, bytes: &[u8]) {
+        let (wb, _) = open_bytes(name, bytes).unwrap();
+        assert_eq!(save_bytes(&wb, name).unwrap(), bytes, "{name} did not save back byte for byte");
+    }
+
+    #[test]
+    fn unchanged_csv_saves_back_byte_for_byte() {
+        let body = "name,city,qty\r\nZoë,Köln,3\r\n\"Smith, J\",São Paulo,12\r\n";
+        // UTF-8, CRLF.
+        round_trip("crlf.csv", body.as_bytes());
+        // UTF-8, LF.
+        round_trip("lf.csv", body.replace("\r\n", "\n").as_bytes());
+        // UTF-8 with a byte-order mark, both line endings.
+        let bom = |s: &str| [&[0xEF, 0xBB, 0xBF][..], s.as_bytes()].concat();
+        round_trip("bom.csv", &bom(body));
+        round_trip("bom-lf.csv", &bom(&body.replace("\r\n", "\n")));
+        // Semicolon-delimited, LF, no line ending after the last record.
+        round_trip("semi.csv", "name;city;qty\nZoë;Köln;3\n\"a;b\";x;12".as_bytes());
+        // Semicolon-delimited with a BOM and CRLF, as Excel writes it in a comma-decimal locale.
+        round_trip("semi-bom.csv", &bom("name;city;qty\r\nZoë;Köln;3\r\n"));
+        // The cut list: semicolons, CRLF, empty trailing fields.
+        round_trip("cut list.csv", CUT_LIST.as_bytes());
+        // A bare CR file.
+        round_trip("cr.csv", b"a,b\r1,2\r");
+        // Windows-1252, with the bytes 0x80-0x9F and Latin-1 letters.
+        round_trip("cp1252.csv", &[b'c', b'a', b'f', 0xE9, b',', 0x80, b'5', b'\r', b'\n', 0x93, b'q', 0x94, b',', 0xFC, b'\r', b'\n']);
+        // UTF-16 LE with its BOM.
+        let utf16: Vec<u8> = [0xFF, 0xFE].into_iter().chain("a,ü\r\n1,2\r\n".encode_utf16().flat_map(u16::to_le_bytes)).collect();
+        round_trip("utf16.csv", &utf16);
+        // Tab-separated text keeps its line ending and encoding too.
+        round_trip("list.tsv", &bom("a\tb\n1\t2\n"));
+    }
+
+    #[test]
+    fn edited_csv_saves_in_the_encoding_and_line_ending_it_was_read_with() {
+        let (mut wb, _) = open_bytes("semi.csv", &[&[0xEF, 0xBB, 0xBF][..], b"a;b\n1;2\n"].concat()).unwrap();
+        wb.sheet_mut(0).unwrap().set_value(CellRef::new(2, 0), gridcraft_core::Value::text("neu"));
+        assert_eq!(save_bytes(&wb, "semi.csv").unwrap(), [&[0xEF, 0xBB, 0xBF][..], b"a;b\n1;2\nneu;\n"].concat());
+        // A character the file's single-byte encoding has no byte for is refused, naming the cell.
+        let (mut wb, _) = open_bytes("cp1252.csv", &[b'a', 0xE9, b'\r', b'\n']).unwrap();
+        wb.sheet_mut(0).unwrap().set_value(CellRef::new(1, 0), gridcraft_core::Value::text("日本"));
+        let msg = save_bytes(&wb, "cp1252.csv").unwrap_err().to_string();
+        assert!(msg.contains("A2") && msg.contains("Windows-1252") && msg.contains('日'), "got: {msg}");
+    }
+
+    #[test]
+    fn csv_save_refuses_by_name_what_csv_cannot_hold() {
+        let (base, _) = open_bytes("data.csv", b"a,b\r\n1,2\r\n").unwrap();
+        let refused = |wb: &Workbook| save_bytes(wb, "data.csv").unwrap_err().to_string();
+        // A formula would be replaced by its result.
+        let mut wb = base.clone();
+        let mut cell = wb.sheet(0).unwrap().cells.get(CellRef::new(1, 0)).cloned().unwrap();
+        cell.formula = Some(std::sync::Arc::new(gridcraft_model::Formula::new("=1+1")));
+        wb.sheet_mut(0).unwrap().cells.set(CellRef::new(1, 0), cell);
+        let msg = refused(&wb);
+        assert!(msg.contains("'data.csv'") && msg.contains("formulas") && msg.contains("A2"), "got: {msg}");
+        // A second sheet.
+        let mut wb = base.clone();
+        wb.sheets.push(std::sync::Arc::new(Sheet::new("Notes")));
+        let msg = refused(&wb);
+        assert!(msg.contains("2 sheets") && msg.contains("Notes"), "got: {msg}");
+        // Formatting beyond the number format.
+        let mut wb = base.clone();
+        let bold = wb.styles.derive(gridcraft_model::StyleId::DEFAULT, |st| st.font.bold = true);
+        wb.sheet_mut(0).unwrap().cells.get_mut(CellRef::new(0, 1)).unwrap().style = bold;
+        let msg = refused(&wb);
+        assert!(msg.contains("cell formatting (B1)"), "got: {msg}");
+        // Merged cells, a comment and a named range, all named in the one refusal.
+        let mut wb = base.clone();
+        wb.sheet_mut(0).unwrap().merges.push(RangeRef::new(CellRef::new(0, 0), CellRef::new(0, 1)));
+        wb.sheet_mut(0).unwrap().comments.insert(
+            CellRef::new(1, 1),
+            gridcraft_model::Comment {
+                author: "M".into(),
+                text: "check".into(),
+                replies: vec![],
+                threaded: false,
+                resolved: false,
+                visible: false,
+                dates: vec![],
+                note_box: None,
+            },
+        );
+        wb.names.push(gridcraft_model::DefinedName {
+            name: "Total".into(),
+            scope: None,
+            formula: "Sheet1!$A$2".into(),
+            comment: String::new(),
+            hidden: false,
+        });
+        let msg = refused(&wb);
+        assert!(msg.contains("merged cells") && msg.contains("comments (B2)") && msg.contains("named ranges (Total)"), "got: {msg}");
+        // Tab-separated text refuses the same.
+        assert!(save_bytes(&wb, "data.tsv").unwrap_err().to_string().contains("tab-separated text"));
+        // A number format is not refused: CSV holds the text as displayed.
+        let mut wb = base.clone();
+        let pct = wb.styles.derive(gridcraft_model::StyleId::DEFAULT, |st| st.num_fmt = gridcraft_model::NumFmt::new("0%"));
+        wb.sheet_mut(0).unwrap().cells.get_mut(CellRef::new(1, 0)).unwrap().style = pct;
+        assert_eq!(save_bytes(&wb, "data.csv").unwrap(), b"a,b\r\n100%,2\r\n");
+        // Nor are column widths: they are view state.
+        let mut wb = base.clone();
+        wb.sheet_mut(0).unwrap().cols.entry(0).or_default().size = Some(120.0);
+        assert_eq!(save_bytes(&wb, "data.csv").unwrap(), b"a,b\r\n1,2\r\n");
+        // Saving as .xlsx keeps them all.
+        assert!(save_bytes(&wb, "data.xlsx").is_ok());
+    }
+
     #[test]
     fn csv_save_of_a_workbook_not_read_from_csv_uses_commas() {
         let mut wb = Workbook::new();
@@ -1189,7 +1441,7 @@ mod tests {
     #[test]
     fn csv_writes_displayed_text() {
         use gridcraft_core::{CellError, Value};
-        use gridcraft_model::{Cell, Formula, LineInfo, NumFmt, StyleId};
+        use gridcraft_model::{Cell, LineInfo, NumFmt, StyleId};
         let mut wb = Workbook::new();
         let mut styled = |code: &str| wb.styles.derive(StyleId::DEFAULT, |s| s.num_fmt = NumFmt::new(code));
         let (date, money, pct, frac, text, fixed, thousands) =
@@ -1203,7 +1455,7 @@ mod tests {
             ("E1", Cell { value: Value::text("007"), formula: None, style: text }),
             ("F1", Cell { value: Value::Error(CellError::NA), formula: None, style: money }),
             ("G1", Cell { value: Value::Bool(true), formula: None, style: StyleId::DEFAULT }),
-            ("A2", Cell { value: Value::Number(46024.0), style: date, ..Cell::formula(Formula::new("A1+1")) }),
+            ("A2", Cell { value: Value::Number(46024.0), formula: None, style: date }),
             ("B2", Cell { value: Value::Number(12345678.9), formula: None, style: fixed }),
             ("C2", Cell { value: Value::Number(-0.25), formula: None, style: StyleId::DEFAULT }),
             ("D2", Cell { value: Value::Number(1234567.0), formula: None, style: thousands }),

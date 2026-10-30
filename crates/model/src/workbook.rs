@@ -179,6 +179,11 @@ pub struct Workbook {
     /// separator back (a `;` file stays a `;` file). `None` = not read from CSV: CSV saves use `,`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub csv_delimiter: Option<u8>,
+    /// How the CSV (or tab-separated) file this workbook was read from was written as text: its
+    /// encoding, byte-order mark and line ending, so saving it back writes the same bytes for
+    /// unchanged content. `None` = not read from delimited text: saves are UTF-8, no BOM, CRLF.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub csv_text: Option<CsvText>,
     /// Unmodelled file content kept for saving (package root and workbook level). Not in JSON.
     #[serde(skip)]
     pub preserved: Option<Arc<crate::preserved::Preserved>>,
@@ -193,6 +198,68 @@ pub struct Workbook {
     /// the links in memory are still written for the old one. Not in JSON.
     #[serde(skip)]
     pub source_path: Option<std::path::PathBuf>,
+}
+
+/// The text encoding a delimited file was read in, which saving it back writes again.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CsvEncoding {
+    #[default]
+    Utf8,
+    Utf16Le,
+    Utf16Be,
+    Windows1252,
+    Windows1256,
+}
+
+impl CsvEncoding {
+    /// The encoding's name as the user knows it.
+    pub fn name(self) -> &'static str {
+        match self {
+            CsvEncoding::Utf8 => "UTF-8",
+            CsvEncoding::Utf16Le => "UTF-16 LE",
+            CsvEncoding::Utf16Be => "UTF-16 BE",
+            CsvEncoding::Windows1252 => "Windows-1252",
+            CsvEncoding::Windows1256 => "Windows-1256",
+        }
+    }
+}
+
+/// The line ending a delimited file was written with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LineEnding {
+    #[default]
+    CrLf,
+    Lf,
+    Cr,
+}
+
+impl LineEnding {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LineEnding::CrLf => "\r\n",
+            LineEnding::Lf => "\n",
+            LineEnding::Cr => "\r",
+        }
+    }
+}
+
+/// How a delimited file was written as text, kept so it is saved back the same way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CsvText {
+    pub encoding: CsvEncoding,
+    /// The file began with a byte-order mark.
+    pub bom: bool,
+    /// The first line ending in the file (outside quoted fields); CRLF when it has none.
+    pub line_ending: LineEnding,
+    /// The last record ended with a line ending.
+    pub final_line_ending: bool,
+}
+
+impl Default for CsvText {
+    /// What a delimited file not read from one is written as: UTF-8, no BOM, CRLF after every record.
+    fn default() -> Self {
+        CsvText { encoding: CsvEncoding::Utf8, bom: false, line_ending: LineEnding::CrLf, final_line_ending: true }
+    }
 }
 
 fn is_all(s: &ShowObjects) -> bool {
@@ -225,6 +292,7 @@ impl Workbook {
             phonetics: vec![],
             vba_project: None,
             csv_delimiter: None,
+            csv_text: None,
             preserved: None,
             source_dir: None,
             source_path: None,

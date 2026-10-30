@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use gridcraft_core::parse::parse_input;
 use gridcraft_core::{CellRef, MAX_COLS, MAX_ROWS, Value};
-use gridcraft_model::{Cell, NumFmt, Sheet, StyleId, Workbook};
+use gridcraft_model::{Cell, CsvEncoding, CsvText, LineEnding, NumFmt, Sheet, StyleId, Workbook};
 
 use crate::{CsvOptions, IoError};
 
@@ -118,25 +118,33 @@ fn is_cp1256_arabic(b: u8) -> bool {
 /// Decodes CSV bytes with BOM-aware UTF-8 and UTF-16 handling. Without a BOM, valid UTF-8 is kept.
 /// Other bytes decode as Windows-1256 when they read as Arabic (see [`Cp1256Evidence`]), else as
 /// Windows-1252.
+#[cfg(test)]
 pub fn decode_text(bytes: &[u8]) -> String {
+    decode_text_as(bytes).0
+}
+
+/// [`decode_text`], also saying which encoding the bytes were read as and whether they began with
+/// a byte-order mark, so the text can be written back the same way.
+pub fn decode_text_as(bytes: &[u8]) -> (String, CsvEncoding, bool) {
     if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
-        return String::from_utf8_lossy(rest).into_owned();
+        return (String::from_utf8_lossy(rest).into_owned(), CsvEncoding::Utf8, true);
     }
     let utf16 = |b: &[u8], le: bool| -> String {
         let units = b.as_chunks::<2>().0.iter().map(|c| if le { u16::from_le_bytes(*c) } else { u16::from_be_bytes(*c) });
         char::decode_utf16(units).map(|r| r.unwrap_or('\u{FFFD}')).collect()
     };
     if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
-        return utf16(rest, true);
+        return (utf16(rest, true), CsvEncoding::Utf16Le, true);
     }
     if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
-        return utf16(rest, false);
+        return (utf16(rest, false), CsvEncoding::Utf16Be, true);
     }
     match std::str::from_utf8(bytes) {
-        Ok(s) => s.to_string(),
+        Ok(s) => (s.to_string(), CsvEncoding::Utf8, false),
         Err(_) => {
             let use_windows_1256 = Cp1256Evidence::of(bytes).is_arabic();
-            bytes
+            let encoding = if use_windows_1256 { CsvEncoding::Windows1256 } else { CsvEncoding::Windows1252 };
+            let text = bytes
                 .iter()
                 .map(|&b| match b {
                     0x80..=0xFF if use_windows_1256 => {
@@ -145,9 +153,81 @@ pub fn decode_text(bytes: &[u8]) -> String {
                     0x80..=0x9F => char::from_u32(CP1252.get((b - 0x80) as usize).copied().unwrap_or(0xFFFD)).unwrap_or('\u{FFFD}'),
                     _ => b as char,
                 })
-                .collect()
+                .collect();
+            (text, encoding, false)
         }
     }
+}
+
+/// The byte a single-byte code page writes for `ch`, if it has one: the inverse of the decoding
+/// in [`decode_text_as`], so every character read from such a file writes back as the same byte.
+fn code_page_byte(encoding: CsvEncoding, ch: char) -> Option<u8> {
+    let cp = ch as u32;
+    if cp < 0x80 {
+        return u8::try_from(cp).ok();
+    }
+    match encoding {
+        CsvEncoding::Windows1256 => CP1256.iter().position(|&c| c == cp).and_then(|i| u8::try_from(i + 0x80).ok()),
+        CsvEncoding::Windows1252 => match CP1252.iter().position(|&c| c == cp) {
+            Some(i) => u8::try_from(i + 0x80).ok(),
+            None => (0xA0..=0xFF).contains(&cp).then(|| u8::try_from(cp).ok()).flatten(),
+        },
+        _ => None,
+    }
+}
+
+/// Whether `encoding` can write `ch`.
+fn can_encode(encoding: CsvEncoding, ch: char) -> bool {
+    match encoding {
+        CsvEncoding::Utf8 | CsvEncoding::Utf16Le | CsvEncoding::Utf16Be => true,
+        CsvEncoding::Windows1252 | CsvEncoding::Windows1256 => code_page_byte(encoding, ch).is_some(),
+    }
+}
+
+/// `text` as bytes in `how`'s encoding, its byte-order mark first when it had one.
+fn encode_text(text: &str, how: &CsvText) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() + 3);
+    match how.encoding {
+        CsvEncoding::Utf8 => {
+            if how.bom {
+                out.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+            }
+            out.extend_from_slice(text.as_bytes());
+        }
+        CsvEncoding::Utf16Le | CsvEncoding::Utf16Be => {
+            let le = how.encoding == CsvEncoding::Utf16Le;
+            if how.bom {
+                out.extend_from_slice(if le { &[0xFF, 0xFE] } else { &[0xFE, 0xFF] });
+            }
+            for unit in text.encode_utf16() {
+                out.extend_from_slice(&if le { unit.to_le_bytes() } else { unit.to_be_bytes() });
+            }
+        }
+        // Every field was checked by the writer; a character with no byte can't reach here.
+        CsvEncoding::Windows1252 | CsvEncoding::Windows1256 => out.extend(text.chars().filter_map(|ch| code_page_byte(how.encoding, ch))),
+    }
+    out
+}
+
+/// How `text` ends its lines: the first line break outside a quoted field, and whether the last
+/// record ends with one.
+fn line_ending_of(text: &str, quote: char) -> (LineEnding, bool) {
+    let mut in_q = false;
+    let mut chars = text.chars().peekable();
+    let mut first = None;
+    while let Some(c) = chars.next() {
+        if c == quote {
+            in_q = !in_q;
+        } else if !in_q && (c == '\r' || c == '\n') {
+            first = Some(match c {
+                '\r' if chars.peek() == Some(&'\n') => LineEnding::CrLf,
+                '\r' => LineEnding::Cr,
+                _ => LineEnding::Lf,
+            });
+            break;
+        }
+    }
+    (first.unwrap_or_default(), text.ends_with(['\r', '\n']))
 }
 
 /// Picks comma, semicolon or tab: the candidate with the most consistent count per line
@@ -249,7 +329,7 @@ pub(crate) fn parse_records(text: &str, delim: char, quote: char, mut on_record:
 }
 
 pub fn read_csv(bytes: &[u8], opts: &CsvOptions) -> Result<Workbook, IoError> {
-    let text = decode_text(bytes);
+    let (text, encoding, bom) = decode_text_as(bytes);
     let quote = if opts.quote == 0 { '"' } else { opts.quote as char };
     let delim = if opts.delimiter == 0 { sniff_delimiter(&text, quote) } else { opts.delimiter } as char;
     if delim == quote {
@@ -258,6 +338,8 @@ pub fn read_csv(bytes: &[u8], opts: &CsvOptions) -> Result<Workbook, IoError> {
     let mut wb = Workbook::new();
     wb.date_system = opts.date_system;
     wb.csv_delimiter = u8::try_from(delim).ok();
+    let (line_ending, final_line_ending) = line_ending_of(&text, quote);
+    wb.csv_text = Some(CsvText { encoding, bom, line_ending, final_line_ending });
     let mut sheet = Sheet::new("Sheet1");
     let mut styles = std::mem::take(&mut wb.styles);
     let mut fmt_cache: Vec<(&'static str, StyleId)> = vec![];
@@ -317,16 +399,36 @@ pub fn write_csv(sheet: &Sheet, delimiter: u8, cell_text: impl FnMut(CellRef) ->
 }
 
 /// [`write_csv`] with the output cap `limit` (bytes) given.
-pub fn write_csv_limited(sheet: &Sheet, delimiter: u8, limit: usize, mut cell_text: impl FnMut(CellRef) -> String) -> Result<Vec<u8>, IoError> {
+pub fn write_csv_limited(sheet: &Sheet, delimiter: u8, limit: usize, cell_text: impl FnMut(CellRef) -> String) -> Result<Vec<u8>, IoError> {
+    write_csv_text_limited(sheet, delimiter, &CsvText::default(), limit, cell_text)
+}
+
+/// [`write_csv`] written as `how` says: the encoding, byte-order mark and line ending of the file the
+/// workbook was read from, so unchanged content saves back as the same bytes. A field holding a
+/// character the encoding has no byte for is refused, naming the cell and the character, rather
+/// than written as something else.
+pub fn write_csv_text(sheet: &Sheet, delimiter: u8, how: &CsvText, cell_text: impl FnMut(CellRef) -> String) -> Result<Vec<u8>, IoError> {
+    write_csv_text_limited(sheet, delimiter, how, MAX_CSV_BYTES, cell_text)
+}
+
+/// [`write_csv_text`] with the output cap `limit` (bytes of text before encoding) given.
+pub fn write_csv_text_limited(
+    sheet: &Sheet,
+    delimiter: u8,
+    how: &CsvText,
+    limit: usize,
+    mut cell_text: impl FnMut(CellRef) -> String,
+) -> Result<Vec<u8>, IoError> {
     let delim = if delimiter == 0 { ',' } else { delimiter as char };
+    let eol = how.line_ending.as_str();
     let mut out = String::new();
     let Some(r) = sheet.used_range() else { return Ok(Vec::new()) };
     let too_large =
         |what: String| IoError::TooLarge(format!("the CSV would be {what}, over the limit of {} MiB; export a smaller range", limit >> 20));
-    // Every row has a delimiter between its fields and a CRLF, whatever the cells hold: a lower
-    // bound on the output that needs no cell text.
+    // Every row has a delimiter between its fields and a line ending, whatever the cells hold: a
+    // lower bound on the output that needs no cell text.
     let (rows, cols) = (u64::from(r.end.row) + 1, u64::from(r.end.col) + 1);
-    let per_row = (cols - 1).saturating_mul(delim.len_utf8() as u64).saturating_add(2);
+    let per_row = (cols - 1).saturating_mul(delim.len_utf8() as u64).saturating_add(eol.len() as u64);
     let least = rows.saturating_mul(per_row);
     if least > limit as u64 {
         return Err(too_large(format!("at least {} MiB ({rows} rows by {cols} columns)", least >> 20)));
@@ -336,7 +438,15 @@ pub fn write_csv_limited(sheet: &Sheet, delimiter: u8, limit: usize, mut cell_te
             if col > 0 {
                 out.push(delim);
             }
-            let t = cell_text(CellRef::new(row, col));
+            let at = CellRef::new(row, col);
+            let t = cell_text(at);
+            if let Some(ch) = t.chars().find(|&ch| !can_encode(how.encoding, ch)) {
+                return Err(IoError::Format(format!(
+                    "{at} holds '{ch}' (U+{:04X}), which the file's encoding, {}, can't hold",
+                    ch as u32,
+                    how.encoding.name()
+                )));
+            }
             let quoted = t.contains(delim) || t.contains('"') || t.contains('\n') || t.contains('\r');
             // The exact size of the field as written (the delimiter was pushed above), so a row
             // never grows past the cap unseen and no doubled-quote copy of the text is built.
@@ -357,10 +467,12 @@ pub fn write_csv_limited(sheet: &Sheet, delimiter: u8, limit: usize, mut cell_te
                 out.push_str(&t);
             }
         }
-        out.push_str("\r\n");
+        if row < r.end.row || how.final_line_ending {
+            out.push_str(eol);
+        }
         if out.len() > limit {
             return Err(too_large(format!("more than {} MiB (stopped at row {})", limit >> 20, row + 1)));
         }
     }
-    Ok(out.into_bytes())
+    Ok(encode_text(&out, how))
 }

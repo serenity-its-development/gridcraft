@@ -106,6 +106,17 @@ fn convert_xlsx_csv_roundtrip() {
         xlsx.to_str().unwrap(),
         "--quiet",
     ]);
+    // CSV can't hold the formula in B4: converting is refused by name, never saved as its result.
+    let o = run(&["convert", xlsx.to_str().unwrap(), csv.to_str().unwrap()]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("formulas"), "{o:?}");
+    ok(&[
+        "run",
+        "--cmd",
+        r#"range.setValues={"range":"A1","values":[["Name","Qty"],["apple",3],["pear, green",4],["total",7]]}"#,
+        "--out",
+        xlsx.to_str().unwrap(),
+        "--quiet",
+    ]);
     ok(&["convert", xlsx.to_str().unwrap(), csv.to_str().unwrap()]);
     let text = std::fs::read_to_string(&csv).unwrap();
     let lines: Vec<&str> = text.lines().collect();
