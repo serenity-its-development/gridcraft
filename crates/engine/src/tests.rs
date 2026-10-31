@@ -2416,8 +2416,11 @@ fn ods_import_never_reuses_source_as_save_target() {
         s.execute("file.save", json!({})).unwrap();
         assert!(s.take_ui_requests().iter().any(|r| matches!(r, crate::UiRequest::Dialog(name, _) if name == "saveAs")));
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
-        assert!(s.execute("file.saveAs", json!({"path": dir.join("source.ods")})).is_err());
-        assert!(s.execute("file.saveBytes", json!({"format": "ods"})).is_err());
+        // Saving as ODS is a new file the user names; the imported original is never touched.
+        let ods = s.execute("file.saveBytes", json!({"format": "ods"})).unwrap();
+        let (copy, _) = crate::io::open_bytes("copy.ods", &crate::io::base64_decode(ods["base64"].as_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(copy.sheet(0).unwrap().value(CellRef::parse("A1").unwrap()), Value::Number(43.0));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
         let output = dir.join("converted.xlsx");
         s.execute("file.saveAs", json!({"path": output})).unwrap();
         assert!(!s.doc().unwrap().is_dirty());

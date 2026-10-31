@@ -337,7 +337,7 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "save_workbook",
             "Save workbook",
-            "Save the active workbook. The format follows the extension (.xlsx default; .csv/.tsv save the active sheet; .json; .html). \
+            "Save the active workbook. The format follows the extension (.xlsx default; .ods; .csv/.tsv save the active sheet; .json; .html). \
              Without `path` saves to the workbook's current file.",
             obj(json!({"path": string("Destination path")}), &[]),
             false,

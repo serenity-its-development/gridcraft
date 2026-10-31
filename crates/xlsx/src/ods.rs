@@ -46,7 +46,7 @@ pub(crate) fn has_mimetype(bytes: &[u8]) -> bool {
 
 /// Imports ODS sheets, typed values, displayed text and merges. Cached formula results are
 /// imported as constants, so editing their inputs does not recalculate the original formula.
-/// Always inspect the returned warnings. Saving to ODS is not supported.
+/// Always inspect the returned warnings. [`crate::write_ods`] saves a workbook as ODS.
 pub fn read_ods(bytes: &[u8]) -> Result<(Workbook, ReadReport), IoError> {
     let mut package = Package::open(bytes)?;
     if !has_mimetype(bytes) {
@@ -240,7 +240,7 @@ impl Import {
         let mut wb = Workbook::new();
         wb.sheets.clear();
         let mut report = ReadReport::default();
-        report.warn("ODS data-only import: formulas become their saved results and will not recalculate. Source formatting, charts, images and other features are not imported. Save a new .xlsx file; ODS saving is not supported.");
+        report.warn("ODS data-only import: formulas become their saved results and will not recalculate. Source formatting, charts, images and other features are not imported. Save it as a new .xlsx or .ods file: saving over the original would replace its formatting.");
         Self { wb, report, stack: vec![], sheet: None, row: None, cell: None, cells: 0, merges: 0, text: 0, formats: vec![], spreadsheet_seen: false }
     }
 
@@ -493,6 +493,8 @@ impl Import {
             },
             Some("string") if raw.is_some() || draft.paragraphs > 0 || !draft.formula => Some(Value::Text(Arc::from(raw.unwrap_or(&draft.text)))),
             Some("void") if !draft.formula => Some(Value::Empty),
+            // LibreOffice (and GridCraft) mark an error value with calcext:value-type="error"; its text is the error.
+            Some("error") => gridcraft_core::CellError::parse(draft.text.trim()).map(Value::Error),
             Some("date") => raw.and_then(parse_date).map(|(n, f)| {
                 format = Some(f);
                 Value::Number(n)

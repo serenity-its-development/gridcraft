@@ -275,7 +275,7 @@ fn convert(args: &[String]) -> Result<(), String> {
     a.no_extra(2)?;
     let pdf = out.to_ascii_lowercase().ends_with(".pdf");
     if !pdf && gridcraft_engine::io::FileKind::from_path(out).is_none() {
-        return Err(format!("{out}: unknown output format (use .xlsx, .csv, .tsv, .json, .html or .pdf)"));
+        return Err(format!("{out}: unknown output format (use .xlsx, .ods, .csv, .tsv, .json, .html or .pdf)"));
     }
     let mut s = open(input)?;
     activate_sheet(&mut s, a.opt("sheet"))?;

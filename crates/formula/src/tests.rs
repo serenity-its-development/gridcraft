@@ -503,3 +503,19 @@ fn number_literal_too_large_for_f64_is_a_parse_error() {
     }
     assert!(parse("1E+308").is_ok());
 }
+
+#[test]
+fn openformula_spelling_for_ods() {
+    let odf = |src: &str| crate::print_odf(&crate::parse(src).unwrap());
+    assert_eq!(odf("SUM(A1:B2,$C$3)").as_deref(), Some("SUM([.A1:.B2];[.$C$3])"));
+    assert_eq!(odf("Sheet2!A1+'My Sheet'!$B$2").as_deref(), Some("[$Sheet2.A1]+[$'My Sheet'.$B$2]"));
+    assert_eq!(odf("SUM(Sheet1:Sheet3!A1)").as_deref(), Some("SUM([$Sheet1.A1:$Sheet3.A1])"));
+    assert_eq!(odf("SUM(A:A)").as_deref(), Some("SUM([.A:.A])"));
+    assert_eq!(odf("SUM(3:5)").as_deref(), Some("SUM([.3:.5])"));
+    assert_eq!(odf("IF(TRUE,\"a\"\"b\",{1,2;3,4})").as_deref(), Some("IF(TRUE();\"a\"\"b\";{1;2|3;4})"));
+    assert_eq!(odf("SUM((A1,B1))").as_deref(), Some("SUM(([.A1]~[.B1]))"));
+    assert_eq!(odf("A1:B2 B1:C3").as_deref(), Some("[.A1:.B2]![.B1:.C3]"));
+    assert_eq!(odf("-A1%^2").as_deref(), Some("-[.A1]%^2"));
+    assert_eq!(odf("Table1[Col]"), None, "a structured reference has no OpenFormula spelling");
+    assert_eq!(odf("A1#"), None, "nor a spill reference");
+}

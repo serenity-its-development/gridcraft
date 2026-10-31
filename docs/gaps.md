@@ -154,7 +154,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   [ui-parity.md](ui-parity.md#accessibility)
 
 ### 19. XLSB/ODS beyond values; minor formats (FF)
-- XLSB and ODS import values only, no write; no `.prn`, `.dif`, `.slk`, XML Spreadsheet 2003; CSV
+- XLSB and ODS import values only; XLSB has no write (ODS writes data, formulas, styles, number formats and names, not charts or images); no `.prn`, `.dif`, `.slk`, XML Spreadsheet 2003; CSV
   writes raw instead of displayed values; templates saved with the workbook content type.
   **Estimate:** 15–23 h.
 

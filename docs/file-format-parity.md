@@ -58,7 +58,7 @@ values) is still dropped.
 | `.xlt` Excel 97-2003 template | R/W | yes (read as `.xls`) | no | | — |
 | `.xlam` / `.xla` add-ins | R/W | no | no | VBA; out of scope | — |
 | `.xml` XML Spreadsheet 2003 | R/W | no | no | Simple to support | — |
-| `.ods` OpenDocument Spreadsheet | R/W | **values only** (#100) | no | Sheets, values, dates, merges, repeated cells, cached formula results; no formulas, formatting, charts; encrypted ODS refused | `ods_tests.rs` |
+| `.ods` OpenDocument Spreadsheet | R/W | **values only** (#100) | yes | Read: sheets, values, dates, errors, merges, repeated cells, cached formula results; no formulas, formatting, charts; encrypted ODS refused. Write: sheets, typed values, OpenFormula formulas with results, merges, widths and heights, cell styles, number formats, names; no charts, images, CF, validation, comments, print setup | `ods_tests.rs`, `ods_write_tests.rs` |
 | Password-encrypted workbooks (Agile/Standard encryption) | R | **yes** (#11): asks for the password on open; Agile (AES-128/192/256, SHA-1/256/384/512) and Standard (AES, SHA-1) | no (opens with no save path; Save As writes it without the password) | Clean-room from [MS-OFFCRYPTO] on the CFB reader. RC4, Extensible and certificate-only encryption refused with a message. Data-integrity HMAC not checked | `crypto/tests.rs`, `encrypted_tests.rs` |
 | `.xlw` Excel 4.0 workbook, `.wk*`, `.dbf` | open only (some) | no | no | Rare | — |
 
@@ -102,7 +102,7 @@ refresh. Counted under features (Get & Transform, ~10% ready), not here.
 | Streaming XLSX reader for very large files (#175), part-size limits that degrade instead of failing | 10–15 |
 | Legacy `.xls` (BIFF8): styles (fonts, fills, borders, alignment), comments, CF, validation, pictures and charts on import; corpus run; then write | 10–15 |
 | Encrypted workbooks: save with password (#11) | 4–6 |
-| XLSB and ODS: formulas and formatting on import; then write | 10–15 |
+| XLSB and ODS: formulas and formatting on import; then XLSB write (ODS writes) | 8–12 |
 | CSV/text: encoding choice, `.prn`, `.dif`, `.slk`, XML Spreadsheet 2003 | 4–7 |
 | PDF: embed subsetted system fonts so every script exports | (counted in [localization](localization-parity.md) script work) |
 

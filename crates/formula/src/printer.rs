@@ -308,3 +308,135 @@ fn write_expr(s: &mut String, e: &Expr, r1c1: Option<CellRef>) {
         }
     }
 }
+
+/// Prints an expression as OpenFormula (ODF 1.2 part 2), the `of:` namespace an `.ods` cell's
+/// `table:formula` uses: references in brackets (`[.A1]`, `[$Sheet2.A1:.B2]`), `;` between
+/// arguments, `~` for union and `!` for intersection. `None` when the formula uses something
+/// OpenFormula has no spelling for (a structured table reference, a spill `#`, a trim range, a
+/// LAMBDA invocation): the caller then keeps only the cell's value.
+pub fn print_odf(e: &Expr) -> Option<String> {
+    let mut s = String::new();
+    write_odf(&mut s, e)?;
+    Some(s)
+}
+
+fn odf_sheet(name: &str) -> String {
+    // A sheet name is quoted when it isn't a plain identifier (ODF 1.2 part 2, 5.8).
+    let plain = name.chars().all(|c| c.is_alphanumeric() || c == '_') && !name.starts_with(|c: char| c.is_ascii_digit());
+    if plain { format!("${name}") } else { format!("$'{}'", name.replace('\'', "''")) }
+}
+
+fn odf_anchor(a: &Anchor) -> String {
+    format!("{}{}{}{}", if a.col_abs { "$" } else { "" }, col_to_letters(a.col), if a.row_abs { "$" } else { "" }, a.row as u64 + 1)
+}
+
+fn odf_reference(r: &Reference) -> String {
+    let (first, last) = match &r.sheet {
+        SheetSel::Current => (String::new(), String::new()),
+        SheetSel::Named(n) => (odf_sheet(n), String::new()),
+        SheetSel::Span(a, b) => (odf_sheet(a), odf_sheet(b)),
+    };
+    let ends = match &r.kind {
+        RefKind::Cell(a) => (odf_anchor(a), None),
+        RefKind::Range(a, b) => (odf_anchor(a), Some(odf_anchor(b))),
+        RefKind::Rows(r0, a0, r1, a1) => {
+            (format!("{}{}", if *a0 { "$" } else { "" }, r0 + 1), Some(format!("{}{}", if *a1 { "$" } else { "" }, r1 + 1)))
+        }
+        RefKind::Cols(c0, a0, c1, a1) => {
+            (format!("{}{}", if *a0 { "$" } else { "" }, col_to_letters(*c0)), Some(format!("{}{}", if *a1 { "$" } else { "" }, col_to_letters(*c1))))
+        }
+    };
+    match (ends, matches!(r.sheet, SheetSel::Span(..))) {
+        ((a, None), false) => format!("[{first}.{a}]"),
+        ((a, None), true) => format!("[{first}.{a}:{last}.{a}]"),
+        ((a, Some(b)), _) => format!("[{first}.{a}:{last}.{b}]"),
+    }
+}
+
+fn write_odf(s: &mut String, e: &Expr) -> Option<()> {
+    match e {
+        Expr::Number(n) => s.push_str(&number(*n)),
+        Expr::Text(t) => {
+            s.push('"');
+            s.push_str(&t.replace('"', "\"\""));
+            s.push('"');
+        }
+        Expr::Bool(b) => s.push_str(if *b { "TRUE()" } else { "FALSE()" }),
+        Expr::Error(err) => s.push_str(err.as_str()),
+        Expr::Array(rows) => {
+            s.push('{');
+            for (ri, row) in rows.iter().enumerate() {
+                if ri > 0 {
+                    s.push('|');
+                }
+                for (ci, el) in row.iter().enumerate() {
+                    if ci > 0 {
+                        s.push(';');
+                    }
+                    write_odf(s, el)?;
+                }
+            }
+            s.push('}');
+        }
+        Expr::Ref(r) => s.push_str(&odf_reference(r)),
+        Expr::Name(n) => {
+            if sheet_split(n).is_some() {
+                return None;
+            }
+            s.push_str(n);
+        }
+        Expr::Struct(_) | Expr::Invoke(..) => return None,
+        Expr::Unary(op, x) => match op {
+            UnOp::Neg => {
+                s.push('-');
+                write_odf(s, x)?;
+            }
+            UnOp::Plus => {
+                s.push('+');
+                write_odf(s, x)?;
+            }
+            // Implicit intersection is what OpenFormula does anyway for a range in a scalar slot.
+            UnOp::At => write_odf(s, x)?,
+            UnOp::Percent => {
+                write_odf(s, x)?;
+                s.push('%');
+            }
+            UnOp::Spill | UnOp::Trim(_) => return None,
+        },
+        Expr::Binary(..) => {
+            let mut rest: Vec<(&BinOp, &Expr)> = Vec::new();
+            let mut first = e;
+            while let Expr::Binary(op, a, b) = first {
+                rest.push((op, b));
+                first = a;
+            }
+            write_odf(s, first)?;
+            for (op, right) in rest.into_iter().rev() {
+                s.push_str(match op {
+                    BinOp::Union => "~",
+                    BinOp::Intersect => "!",
+                    other => other.symbol(),
+                });
+                write_odf(s, right)?;
+            }
+        }
+        Expr::Call(name, args) => {
+            s.push_str(name);
+            s.push('(');
+            for (i, a) in args.iter().enumerate() {
+                if i > 0 {
+                    s.push(';');
+                }
+                write_odf(s, a)?;
+            }
+            s.push(')');
+        }
+        Expr::Missing => {}
+        Expr::Paren(x) => {
+            s.push('(');
+            write_odf(s, x)?;
+            s.push(')');
+        }
+    }
+    Some(())
+}
