@@ -38,6 +38,11 @@ pub mod text_box;
 pub mod theme;
 pub mod widgets;
 
+/// The Excel 97-2003 test workbook the engine's tests build in code.
+#[cfg(test)]
+#[path = "../../engine/tests/fixtures/legacy_xls.rs"]
+mod tests_support;
+
 use std::collections::HashMap;
 
 use gridcraft_engine::core::{CellRef, RangeRef};
@@ -815,7 +820,10 @@ impl SheetApp {
                 }
             }
             "saveAs" => {
-                let suggested = self.session.active().map(|d| d.display_title()).unwrap_or_else(|| "Book1".into());
+                // A workbook imported from an Excel 97-2003 file is offered `<stem>.xlsx` in the
+                // original's folder (files/973): the .xls itself is never written.
+                let suggested =
+                    self.session.active().map(|d| d.save_beside_path().unwrap_or_else(|| d.display_title())).unwrap_or_else(|| "Book1".into());
                 if let Some(pick) = &self.services.pick_save {
                     if let Some(path) = pick(&suggested) {
                         let path = if std::path::Path::new(&path).extension().is_none() { format!("{path}.xlsx") } else { path };
@@ -828,6 +836,9 @@ impl SheetApp {
                 {
                     let name = r.get("name").and_then(Json::as_str).unwrap_or("Book.xlsx").to_string();
                     dl(&name, &b);
+                    if let Some(text) = self.session.active().and_then(|d| backstage::legacy_saved_notice(self.ui.language, d)) {
+                        self.notice = Some(Notice { text, kind: NoticeKind::Info, action: None });
+                    }
                 }
             }
             // File › Options (`file.options`) and the File tab itself open the Backstage view.

@@ -3262,71 +3262,9 @@ fn xlsb_import_never_reuses_source_as_save_target() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// A one-sheet Excel 97-2003 workbook ([MS-CFB] container, [MS-XLS] BIFF8 stream) built in code:
-/// A1 = 42 and A2 = `A1*2` with its cached result.
-fn xls_fixture() -> Vec<u8> {
-    fn rec(id: u16, payload: &[u8]) -> Vec<u8> {
-        [&id.to_le_bytes()[..], &(payload.len() as u16).to_le_bytes(), payload].concat()
-    }
-    let bof = |dt: u16| rec(0x0809, &[&0x0600u16.to_le_bytes()[..], &dt.to_le_bytes(), &[0; 12]].concat());
-    let sheet = [
-        bof(0x0010),
-        rec(0x0203, &[&[0u8, 0, 0, 0, 0, 0][..], &42f64.to_le_bytes()].concat()),
-        rec(0x0006, &[&[1u8, 0, 0, 0, 0, 0][..], &84f64.to_le_bytes(), &[0; 6], &[9, 0, 0x44, 0, 0, 0, 0xC0, 0x1E, 2, 0, 0x05]].concat()),
-        rec(0x000A, &[]),
-    ]
-    .concat();
-    let globals = |pos: u32| [bof(0x0005), rec(0x0085, &[&pos.to_le_bytes()[..], &[0, 0, 3, 0], b"Old"].concat()), rec(0x000A, &[])].concat();
-    let stream = [globals(globals(0).len() as u32), sheet].concat();
-    // Sectors: 0 FAT, 1 directory, 2 mini FAT, 3 mini stream container.
-    let mut b = vec![0u8; 512 * 5];
-    let mut put = |at: usize, v: &[u8]| b[at..at + v.len()].copy_from_slice(v);
-    put(0, &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
-    put(26, &3u16.to_le_bytes());
-    put(30, &9u16.to_le_bytes());
-    put(32, &6u16.to_le_bytes());
-    put(44, &1u32.to_le_bytes());
-    put(48, &1u32.to_le_bytes());
-    put(56, &4096u32.to_le_bytes());
-    put(60, &2u32.to_le_bytes());
-    put(64, &1u32.to_le_bytes());
-    put(68, &0xFFFF_FFFEu32.to_le_bytes());
-    for i in 1..109 {
-        put(76 + i * 4, &0xFFFF_FFFFu32.to_le_bytes());
-    }
-    for (i, v) in [0xFFFF_FFFDu32, 0xFFFF_FFFE, 0xFFFF_FFFE, 0xFFFF_FFFE].iter().enumerate() {
-        put(512 + i * 4, &v.to_le_bytes());
-    }
-    for i in 4..128 {
-        put(512 + i * 4, &0xFFFF_FFFFu32.to_le_bytes());
-    }
-    let minis = stream.len().div_ceil(64);
-    for i in 0..128 {
-        let next = if i + 1 < minis {
-            i as u32 + 1
-        } else if i + 1 == minis {
-            0xFFFF_FFFE
-        } else {
-            0xFFFF_FFFF
-        };
-        put(512 * 3 + i * 4, &next.to_le_bytes());
-    }
-    let entry = |k: usize, name: &str, kind: u8, child: u32, start: u32, size: u32, put: &mut dyn FnMut(usize, &[u8])| {
-        let at = 512 * 2 + k * 128;
-        let units: Vec<u8> = name.encode_utf16().flat_map(u16::to_le_bytes).collect();
-        put(at, &units);
-        put(at + 64, &(units.len() as u16 + 2).to_le_bytes());
-        put(at + 66, &[kind, 1]);
-        put(at + 68, &[0xFF; 8]);
-        put(at + 76, &child.to_le_bytes());
-        put(at + 116, &start.to_le_bytes());
-        put(at + 120, &size.to_le_bytes());
-    };
-    entry(0, "Root Entry", 5, 1, 3, 512, &mut put);
-    entry(1, "Workbook", 2, 0xFFFF_FFFF, 0, stream.len() as u32, &mut put);
-    put(512 * 4, &stream);
-    b
-}
+#[path = "../tests/fixtures/legacy_xls.rs"]
+mod legacy_xls;
+use legacy_xls::xls_fixture;
 
 #[test]
 fn xls_import_keeps_formulas_and_never_saves_back_to_xls() {
@@ -3344,7 +3282,51 @@ fn xls_import_keeps_formulas_and_never_saves_back_to_xls() {
     s.execute("cell.set", json!({"cell": "A1", "input": "50"})).unwrap();
     assert_eq!(v(&s, "A2"), Value::Number(100.0));
     assert!(s.execute("file.saveBytes", json!({"format": "xls"})).is_err());
-    assert!(s.execute("file.saveBytes", json!({"format": "xlsx"})).is_ok());
+    // Saved under the original's own name, as an .xlsx (files/973): never "(imported)", never .xls.
+    let saved = s.execute("file.saveBytes", json!({"format": "xlsx"})).unwrap();
+    assert_eq!(saved["name"], "legacy.xlsx");
+    s.execute("file.open", json!({"name": "legacy.xlsx", "base64": saved["base64"]})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::Number(50.0));
+    assert_eq!(v(&s, "A2"), Value::Number(100.0));
+    assert!(s.doc().unwrap().legacy_source.is_none(), "an .xlsx has nothing to save beside");
+}
+
+/// files/973: Save of an opened .xls (or .xlt) writes `<stem>.xlsx` beside it. The original's
+/// bytes never change, and a save naming the .xls itself stays refused.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn saving_an_opened_xls_writes_an_xlsx_beside_the_original() {
+    #[allow(clippy::disallowed_methods)] // native-only test: a unique temp dir name
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("gridcraft-xls-beside-{}-{nonce}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let bytes = xls_fixture();
+    for ext in ["xls", "XLT"] {
+        let original = dir.join(format!("Plan.{ext}"));
+        std::fs::write(&original, &bytes).unwrap();
+        let mut s = s();
+        s.execute("file.open", json!({"path": original})).unwrap();
+        s.take_ui_requests();
+        let d = s.doc().unwrap();
+        assert_eq!(d.legacy_source_name().as_deref(), Some(format!("Plan.{ext}").as_str()));
+        let beside = dir.join("Plan.xlsx");
+        assert_eq!(d.save_beside_path().as_deref(), Some(beside.to_string_lossy().as_ref()));
+        s.execute("cell.set", json!({"cell": "A1", "input": "7"})).unwrap();
+        // Save asks where (the interface suggests the path beside the original).
+        s.execute("file.save", json!({})).unwrap();
+        assert!(s.take_ui_requests().iter().any(|r| matches!(r, crate::UiRequest::Dialog(name, _) if name == "saveAs")));
+        assert!(s.execute("file.saveAs", json!({"path": original})).is_err(), "the .xls itself is never written");
+        s.execute("file.saveAs", json!({"path": beside})).unwrap();
+        assert_eq!(std::fs::read(&original).unwrap(), bytes, "the original is unchanged");
+        let d = s.doc().unwrap();
+        assert!(!d.is_dirty() && d.legacy_source.is_none());
+        assert_eq!(d.path.as_deref(), Some(beside.to_string_lossy().as_ref()));
+        let (wb, _) = crate::io::open_bytes("Plan.xlsx", &std::fs::read(&beside).unwrap()).unwrap();
+        assert_eq!(gridcraft_xlsx::sniff(&std::fs::read(&beside).unwrap()), gridcraft_xlsx::Format::Xlsx);
+        assert_eq!(wb.active().unwrap().value(CellRef::parse("A1").unwrap()), Value::Number(7.0));
+        std::fs::remove_file(&beside).unwrap();
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

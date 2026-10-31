@@ -660,11 +660,36 @@ fn info(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage) {
     });
 }
 
+/// What the Save dialog states for a workbook imported from an Excel 97-2003 file (files/974):
+/// "Plan.xls is an older Excel file: it saves as Plan.xlsx beside the original, which is never
+/// changed." `None` for any other workbook.
+pub fn legacy_save_statement(lang: Language, doc: &gridcraft_engine::DocState) -> Option<String> {
+    let (original, name) = (doc.legacy_source_name()?, doc.save_beside_name()?);
+    Some(
+        lang.tr("{original} is an older Excel file: it saves as {name} beside the original, which is never changed.")
+            .replace("{original}", &original)
+            .replace("{name}", &name),
+    )
+}
+
+/// The info line after a browser Save of a workbook imported from an Excel 97-2003 file: "Saved as
+/// Plan.xlsx beside Plan.xls; Plan.xls is unchanged." `None` for any other workbook.
+pub fn legacy_saved_notice(lang: Language, doc: &gridcraft_engine::DocState) -> Option<String> {
+    let (original, name) = (doc.legacy_source_name()?, doc.save_beside_name()?);
+    Some(lang.tr("Saved as {name} beside {original}; {original} is unchanged.").replace("{original}", &original).replace("{name}", &name))
+}
+
 fn save_as(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage, out: &mut Outcome) {
     let lang = app.ui.language;
     dim(ui, lang.tr("Save the workbook under another name or in another folder."));
-    ui.add_space(14.0);
     let fmt = bs.save_format;
+    if fmt == "xlsx"
+        && let Some(statement) = app.session.active().and_then(|d| legacy_save_statement(lang, d))
+    {
+        ui.add_space(6.0);
+        ui.label(RichText::new(statement).font(theme::ui_font(12.5)).color(Tokens::get(ui.ctx()).text));
+    }
+    ui.add_space(14.0);
     let current = SAVE_TYPES.iter().find(|(ext, _)| *ext == fmt).map_or("Excel Workbook (*.xlsx)", |(_, label)| *label);
     ui.horizontal(|ui| {
         ui.label(lang.tr("Save as type"));
@@ -1052,6 +1077,28 @@ fn account(app: &mut SheetApp, ui: &mut Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn doc_from(name: &str, bytes: &[u8]) -> gridcraft_engine::Session {
+        let mut s = gridcraft_engine::Session::new();
+        s.run("file.open", json!({"name": name, "base64": gridcraft_engine::io::base64_encode(bytes)})).unwrap();
+        s
+    }
+
+    #[test]
+    fn the_save_dialog_states_where_a_legacy_xls_saves() {
+        let s = doc_from("Plan.xls", &crate::tests_support::xls_fixture());
+        let d = s.active().unwrap();
+        assert_eq!(
+            legacy_save_statement(Language::En, d).as_deref(),
+            Some("Plan.xls is an older Excel file: it saves as Plan.xlsx beside the original, which is never changed.")
+        );
+        assert_eq!(legacy_saved_notice(Language::En, d).as_deref(), Some("Saved as Plan.xlsx beside Plan.xls; Plan.xls is unchanged."));
+        let xlsx = gridcraft_engine::io::save_bytes(&gridcraft_engine::model::Workbook::new(), "Plan.xlsx").unwrap();
+        let s = doc_from("Plan.xlsx", &xlsx);
+        let d = s.active().unwrap();
+        assert_eq!(legacy_save_statement(Language::En, d), None, "an .xlsx saves over itself: nothing to state");
+        assert_eq!(legacy_saved_notice(Language::En, d), None);
+    }
 
     #[test]
     fn ages_are_told_in_words() {

@@ -192,6 +192,11 @@ fn services() -> Services {
             let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).filter(|e| TYPES.iter().any(|(_, x)| x == e));
             let ext = ext.unwrap_or_else(|| "xlsx".to_string());
             let mut dialog = rfd::FileDialog::new().set_file_name(format!("{stem}.{ext}"));
+            // A suggestion with a folder (an imported .xls is saved as .xlsx beside the original)
+            // opens the picker there.
+            if let Some(dir) = path.parent().filter(|d| d.is_absolute() && d.is_dir()) {
+                dialog = dialog.set_directory(dir);
+            }
             for (label, x) in TYPES.iter().filter(|(_, x)| *x == ext).chain(TYPES.iter().filter(|(_, x)| *x != ext)) {
                 dialog = dialog.add_filter(*label, &[*x]);
             }

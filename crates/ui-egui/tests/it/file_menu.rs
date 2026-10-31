@@ -373,3 +373,73 @@ fn save_a_copy_with_a_bare_name_asks_where_to_save_it() {
     assert_eq!(asked.lock().unwrap().len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[path = "../../../engine/tests/fixtures/legacy_xls.rs"]
+mod legacy_xls;
+
+/// files/973, 974: a legacy .xls opened in the browser saves as `<stem>.xlsx`, a new file beside
+/// the original, never under the .xls name; the Save As page states so before, the info bar after.
+#[test]
+fn a_legacy_xls_saves_in_the_browser_as_an_xlsx_beside_the_original() {
+    let downloads = Arc::new(Mutex::new(Vec::<(String, Vec<u8>)>::new()));
+    let capture = downloads.clone();
+    let mut h = harness(Services {
+        download: Some(Box::new(move |name, bytes| capture.lock().unwrap().push((name.to_string(), bytes.to_vec())))),
+        ..Default::default()
+    });
+    let original = legacy_xls::xls_fixture();
+    h.state_mut().run("file.open", serde_json::json!({"name": "Plan.xls", "base64": gridcraft_engine::io::base64_encode(&original)})).unwrap();
+    h.run_steps(2);
+    assert!(h.state_mut().message.take().is_some_and(|(_, m)| m.contains("97-2003")), "the import is reported");
+    h.state_mut().run("cell.set", serde_json::json!({"cell": "A1", "input": "9"})).unwrap();
+    h.run_steps(2);
+    choose(&mut h, "Save");
+    assert_eq!(page(&h), Some("saveAs"));
+    h.get_by_label("Plan.xls is an older Excel file: it saves as Plan.xlsx beside the original, which is never changed.");
+    click(&mut h, "Download (.xlsx)");
+    let saved = downloads.lock().unwrap();
+    assert_eq!(saved.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["Plan.xlsx"], "the host is handed <stem>.xlsx");
+    assert!(saved[0].1.starts_with(b"PK"), "an .xlsx package, not BIFF");
+    let (wb, _) = gridcraft_engine::io::open_bytes("Plan.xlsx", &saved[0].1).unwrap();
+    assert_eq!(wb.active().unwrap().value(CellRef::new(0, 0)), Value::Number(9.0));
+    assert_eq!(wb.active().unwrap().value(CellRef::new(1, 0)), Value::Number(18.0));
+    drop(saved);
+    assert_eq!(h.state().notice.as_ref().map(|n| n.text.as_str()), Some("Saved as Plan.xlsx beside Plan.xls; Plan.xls is unchanged."));
+}
+
+/// files/973 on the desktop: Save of an opened .xls asks where with `<stem>.xlsx` in the
+/// original's folder, and the .xls on disk keeps its bytes.
+#[test]
+fn a_legacy_xls_saves_on_the_desktop_as_an_xlsx_beside_the_original() {
+    let dir = std::env::temp_dir().join(format!("gridcraft-xls-beside-ui-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let original = dir.join("Plan.xls");
+    let bytes = legacy_xls::xls_fixture();
+    std::fs::write(&original, &bytes).unwrap();
+    let asked = Arc::new(Mutex::new(Vec::<String>::new()));
+    let capture = asked.clone();
+    let mut h = harness(Services {
+        pick_save: Some(Box::new(move |suggested| {
+            capture.lock().unwrap().push(suggested.to_string());
+            Some(suggested.to_string())
+        })),
+        ..Default::default()
+    });
+    h.state_mut().open_path(&original.to_string_lossy());
+    assert!(h.state_mut().message.take().is_some_and(|(_, m)| m.contains("97-2003")), "the import is reported");
+    h.state_mut().run("cell.set", serde_json::json!({"cell": "A1", "input": "5"})).unwrap();
+    h.run_steps(2);
+    h.state_mut().run_or_alert("file.save", serde_json::json!({}));
+    h.run_steps(3);
+    let beside = dir.join("Plan.xlsx");
+    assert_eq!(*asked.lock().unwrap(), vec![beside.to_string_lossy().into_owned()], "the picker suggests Plan.xlsx beside Plan.xls");
+    assert!(h.state().message.is_none(), "{:?}", h.state().message);
+    assert_eq!(std::fs::read(&original).unwrap(), bytes, "the original is never written");
+    let (wb, _) = gridcraft_engine::io::open_bytes("Plan.xlsx", &std::fs::read(&beside).unwrap()).unwrap();
+    assert_eq!(wb.active().unwrap().value(CellRef::new(0, 0)), Value::Number(5.0));
+    let d = h.state().session.active().unwrap();
+    assert_eq!(d.path.as_deref(), Some(beside.to_string_lossy().as_ref()));
+    assert!(!d.is_dirty());
+    let _ = std::fs::remove_dir_all(&dir);
+}

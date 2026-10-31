@@ -85,6 +85,11 @@ fn open(s: &mut Session, p: &Json) -> Result<Json> {
     }
     // Someone else may have made the file: its active content asks before it runs.
     let mut doc = DocState::new(wb, path, title, crate::Trust::FromFile);
+    // An Excel 97-2003 file named as one: Save writes `<stem>.xlsx` beside it, never over it. (A
+    // BIFF file under an .xlsx name is not: its `<stem>.xlsx` would be the original itself.)
+    if imported && crate::io::FileKind::from_path(&name) == Some(crate::io::FileKind::Xls) {
+        doc.legacy_source = Some(name.clone());
+    }
     if crate::io::FileKind::from_path(&name).is_none() && gridcraft_xlsx::sniff(&bytes) == gridcraft_xlsx::Format::Xlsx {
         doc.content_kind = Some(crate::io::FileKind::Xlsx);
     }
@@ -139,6 +144,7 @@ fn save(s: &mut Session, p: &Json) -> Result<Json> {
         }
         d.saved = d.wb.clone();
         d.path = Some(path.clone());
+        d.legacy_source = None;
     }
     Ok(json!({"path": path, "bytes": bytes.len()}))
 }
@@ -154,7 +160,10 @@ fn save_as(s: &mut Session, p: &Json) -> Result<Json> {
 fn save_bytes(s: &mut Session, p: &Json) -> Result<Json> {
     let fmt = str_param(p, "format").unwrap_or("xlsx");
     let d = s.doc()?;
-    let name = format!("{}.{fmt}", std::path::Path::new(&d.display_title()).file_stem().and_then(|x| x.to_str()).unwrap_or("Book"));
+    // An imported Excel 97-2003 file is named after the original (`Plan.xls` → `Plan.xlsx`), so
+    // the copy the host receives is saved beside it under the name the Save dialog stated.
+    let title = d.save_beside_name().unwrap_or_else(|| d.display_title());
+    let name = format!("{}.{fmt}", std::path::Path::new(&title).file_stem().and_then(|x| x.to_str()).unwrap_or("Book"));
     // The file name goes into a PivotChart's link to its PivotTable.
     let bytes = crate::io::save_bytes(&d.wb, &name)?;
     Ok(json!({"name": name, "base64": crate::io::base64_encode(&bytes), "bytes": bytes.len()}))

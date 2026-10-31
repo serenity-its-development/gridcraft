@@ -204,6 +204,11 @@ pub struct DocState {
     /// The references `edit.goTo` with `record: true` went to in this document, newest first,
     /// without names, each area written with its sheet (`Sheet1!B14:C22,Sheet1!F19:G30`).
     pub go_to_recent: Vec<String>,
+    /// The Excel 97-2003 file (.xls, .xlt) this workbook was imported from: its path, or its bare
+    /// name when it arrived as bytes. Sheets reads that format but never writes it, so saving
+    /// writes `<stem>.xlsx` beside the original ([`DocState::save_beside_path`]) and the original
+    /// is never changed. Cleared once the workbook is saved as its own file.
+    pub legacy_source: Option<String>,
 }
 
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -291,6 +296,7 @@ impl DocState {
             scripts_trusted,
             trust,
             go_to_recent: vec![],
+            legacy_source: None,
         }
     }
     pub fn is_dirty(&self) -> bool {
@@ -328,6 +334,28 @@ impl DocState {
             self.saved = self.wb.clone();
         }
     }
+    /// The file name of the Excel 97-2003 original this workbook was imported from (`Plan.xls`).
+    pub fn legacy_source_name(&self) -> Option<String> {
+        let source = self.legacy_source.as_deref()?;
+        Some(std::path::Path::new(source).file_name().map_or_else(|| source.to_string(), |n| n.to_string_lossy().into_owned()))
+    }
+
+    /// The name a Save of an imported Excel 97-2003 workbook writes: `<stem>.xlsx` (`Plan.xls` →
+    /// `Plan.xlsx`). `None` for any other workbook.
+    pub fn save_beside_name(&self) -> Option<String> {
+        let source = self.legacy_source.as_deref()?;
+        let stem = std::path::Path::new(source).file_stem().and_then(|s| s.to_str()).filter(|s| !s.is_empty()).unwrap_or("Book");
+        Some(format!("{stem}.xlsx"))
+    }
+
+    /// Where a Save of an imported Excel 97-2003 workbook writes: `<stem>.xlsx` in the original's
+    /// folder, or the bare name when the original arrived as bytes and had no folder.
+    pub fn save_beside_path(&self) -> Option<String> {
+        let name = self.save_beside_name()?;
+        let parent = std::path::Path::new(self.legacy_source.as_deref()?).parent().filter(|p| !p.as_os_str().is_empty());
+        Some(parent.map_or_else(|| name.clone(), |dir| dir.join(&name).to_string_lossy().into_owned()))
+    }
+
     pub fn display_title(&self) -> String {
         self.path
             .as_deref()
