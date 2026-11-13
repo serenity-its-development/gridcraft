@@ -89,6 +89,7 @@ fn open(s: &mut Session, p: &Json) -> Result<Json> {
     // BIFF file under an .xlsx name is not: its `<stem>.xlsx` would be the original itself.)
     if imported && crate::io::FileKind::from_path(&name) == Some(crate::io::FileKind::Xls) {
         doc.legacy_source = Some(name.clone());
+        doc.import_warnings = warnings.iter().filter(|w| w.as_str() != crate::io::DECRYPTED_NOTICE).cloned().collect();
     }
     if crate::io::FileKind::from_path(&name).is_none() && gridcraft_xlsx::sniff(&bytes) == gridcraft_xlsx::Format::Xlsx {
         doc.content_kind = Some(crate::io::FileKind::Xlsx);

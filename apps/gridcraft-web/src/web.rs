@@ -161,6 +161,20 @@ impl eframe::App for WebShell {
                 ctx.request_repaint();
             }
         }
+        // The host's asks for the bytes: the workbook as it stands, with nothing committed or marked saved.
+        if let Some(bridge) = &self.bridge {
+            for (request, keep_original) in bridge.take_exports() {
+                let opened = bridge.opened().name;
+                match self.app.host_export(&opened, keep_original) {
+                    Ok(export) => {
+                        if let Err(e) = bridge.post_export(&export.name, &export.bytes, request, &export.losses) {
+                            log::warn!("Sheets: the export could not be handed to the host: {e}");
+                        }
+                    }
+                    Err(e) => log::warn!("Sheets: {opened} was not exported: {e}"),
+                }
+            }
+        }
         // Store changed preferences straight away: a reload or closed tab runs no exit code (#1562).
         let changed = self.prefs.changed(&self.app);
         if !changed.is_empty() {

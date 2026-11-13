@@ -209,6 +209,9 @@ pub struct DocState {
     /// writes `<stem>.xlsx` beside the original ([`DocState::save_beside_path`]) and the original
     /// is never changed. Cleared once the workbook is saved as its own file.
     pub legacy_source: Option<String>,
+    /// What the import of an Excel 97-2003 file ([`Self::legacy_source`]) said it dropped or approximated (its warnings,
+    /// the ones shown when it opened): what the host's file loses in its `.xlsx` twin, beside the format itself.
+    pub import_warnings: Vec<String>,
 }
 
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -297,6 +300,7 @@ impl DocState {
             trust,
             go_to_recent: vec![],
             legacy_source: None,
+            import_warnings: vec![],
         }
     }
     pub fn is_dirty(&self) -> bool {
@@ -309,30 +313,41 @@ impl DocState {
     /// cell): the first visible cell of the scrolling area per sheet index in `tops`, and the
     /// active sheet's active cell. View state never makes the workbook dirty.
     pub fn store_view(&mut self, tops: &[(usize, CellRef)]) {
-        let active = self.selection.active;
-        let si = self.wb.active_sheet;
-        let changed = tops.iter().any(|(i, c)| self.wb.sheets.get(*i).is_some_and(|sh| sh.view_top_left != *c))
-            || self.wb.sheets.get(si).is_some_and(|sh| sh.view_active != active);
-        if !changed {
+        let wb = self.workbook_with_view(tops);
+        if Arc::ptr_eq(&wb, &self.wb) {
             return;
         }
         let dirty = self.is_dirty();
-        let wb = Arc::make_mut(&mut self.wb);
+        self.wb = wb;
+        if !dirty {
+            self.saved = self.wb.clone();
+        }
+    }
+    /// The workbook as [`Self::store_view`] would leave it, as a copy: the document itself is only read (the same workbook
+    /// when the view state is already recorded).
+    pub fn workbook_with_view(&self, tops: &[(usize, CellRef)]) -> Arc<Workbook> {
+        let active = self.selection.active;
+        let mut wb = self.wb.clone();
+        let si = wb.active_sheet;
+        let changed = tops.iter().any(|(i, c)| wb.sheets.get(*i).is_some_and(|sh| sh.view_top_left != *c))
+            || wb.sheets.get(si).is_some_and(|sh| sh.view_active != active);
+        if !changed {
+            return wb;
+        }
+        let w = Arc::make_mut(&mut wb);
         for (i, c) in tops {
-            if let Some(sh) = wb.sheets.get_mut(*i)
+            if let Some(sh) = w.sheets.get_mut(*i)
                 && sh.view_top_left != *c
             {
                 Arc::make_mut(sh).view_top_left = *c;
             }
         }
-        if let Some(sh) = wb.sheets.get_mut(si)
+        if let Some(sh) = w.sheets.get_mut(si)
             && sh.view_active != active
         {
             Arc::make_mut(sh).view_active = active;
         }
-        if !dirty {
-            self.saved = self.wb.clone();
-        }
+        wb
     }
     /// The file name of the Excel 97-2003 original this workbook was imported from (`Plan.xls`).
     pub fn legacy_source_name(&self) -> Option<String> {

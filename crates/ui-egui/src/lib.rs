@@ -184,6 +184,14 @@ pub struct Notice {
     pub action: Option<(String, String)>,
 }
 
+/// [`SheetApp::host_export`]: the file name the bytes are in, the bytes, and what the host's file loses in them.
+#[derive(Debug, PartialEq)]
+pub struct HostExport {
+    pub name: String,
+    pub bytes: Vec<u8>,
+    pub losses: Vec<String>,
+}
+
 /// Host services the platform shell provides (file pickers, opening URLs).
 #[derive(Default)]
 pub struct Services {
@@ -979,7 +987,14 @@ impl SheetApp {
     /// cell to the engine so a save writes them (`sheetView topLeftCell`). Normal view only:
     /// Page Layout view scrolls over pages, not cells.
     pub fn store_view_state(&mut self) {
-        let Some(d) = self.session.active_mut() else { return };
+        let Some(tops) = self.session.active().map(|d| self.view_tops(d)) else { return };
+        if let Some(d) = self.session.active_mut() {
+            d.store_view(&tops);
+        }
+    }
+
+    /// The first visible cell of each sheet of `d` shown in Normal view ([`Self::store_view_state`]).
+    fn view_tops(&self, d: &gridcraft_engine::DocState) -> Vec<(usize, CellRef)> {
         let mut tops = Vec::new();
         for (&(uid, si), v) in &self.views {
             let Some(sh) = d.wb.sheets.get(si).filter(|sh| uid == d.uid && sh.view == gridcraft_engine::model::SheetViewMode::Normal) else {
@@ -991,7 +1006,36 @@ impl SheetApp {
             let col = sh.col_at(sh.col_left(fc) + v.scroll.x.max(0.0) as f64 + 0.01);
             tops.push((si, CellRef::new(row, col)));
         }
-        d.store_view(&tops);
+        tops
+    }
+
+    /// The answer to the host's ask for the bytes of its file `opened` (`craft:export`: auto-save, save on close), taken as
+    /// the workbook stands, with the view state a save records. The workbook is only read (`&self`): no cell being edited
+    /// is committed, nothing is marked saved or shown, and it keeps its unsaved state and its history. A workbook in Sheets's
+    /// own formats answers in the opened file's own format under its name: for an .xlsx, the bytes a Save writes. An
+    /// imported Excel 97-2003 file has no writer, so the answer is its `.xlsx` twin (`<stem>.xlsx`, the name and bytes its
+    /// Save writes beside it, files/973) with the loss said, and what its import dropped or approximated; `keep_original`
+    /// asks for the file's own format, which such a file cannot have, so it is refused.
+    pub fn host_export(&self, opened: &str, keep_original: bool) -> Result<HostExport, String> {
+        let d = self
+            .session
+            .documents()
+            .iter()
+            .find(|d| d.wb.source_path.as_deref() == Some(std::path::Path::new(opened)))
+            .ok_or_else(|| format!("no open workbook is {opened}"))?;
+        let ext = std::path::Path::new(opened).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        let (name, losses) = match d.save_beside_name() {
+            Some(_) if keep_original => return Err(format!("Sheets has no writer for .{ext}, so {opened} cannot be kept in its own format")),
+            Some(twin) => {
+                let mut losses = vec![format!("Sheets has no writer for .{ext}, so it cannot keep the file in its older format")];
+                losses.extend(d.import_warnings.iter().cloned());
+                (twin, losses)
+            }
+            None => (opened.to_string(), Vec::new()),
+        };
+        let wb = d.workbook_with_view(&self.view_tops(d));
+        let bytes = gridcraft_engine::io::save_bytes(&wb, &name).map_err(|e| e.to_string())?;
+        Ok(HostExport { name, bytes, losses })
     }
 
     /// Starts editing the active cell. `text` replaces the content (typing) or pre-fills it.
@@ -1556,5 +1600,118 @@ mod first_view_tests {
         s.new_workbook();
         let mut app = SheetApp::new(s, Default::default());
         assert!(!app.open_at_first_view("x", 0.5, 0.5));
+    }
+}
+
+#[cfg(test)]
+mod host_export_tests {
+    use super::*;
+    use serde_json::json;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    type Handed = Rc<RefCell<Vec<(String, Vec<u8>)>>>;
+
+    /// The app in a host page: what would download goes to the host, recorded with its bytes; `name` opened from `bytes`
+    /// as the host sends a file, then edited.
+    fn host_app(name: &str, bytes: &[u8]) -> (SheetApp, Handed) {
+        let handed: Handed = Rc::default();
+        let sink = handed.clone();
+        let services = Services { download: Some(Box::new(move |n: &str, b: &[u8]| sink.borrow_mut().push((n.to_string(), b.to_vec())))), ..Default::default() };
+        let mut app = SheetApp::new(gridcraft_engine::Session::new(), services);
+        assert!(app.host_export(name, false).is_err(), "nothing is open yet");
+        app.run("file.open", json!({"name": name, "base64": gridcraft_engine::io::base64_encode(bytes)})).unwrap();
+        app.run("cell.set", json!({"cell": "C3", "input": "7"})).unwrap();
+        assert!(app.session.active().unwrap().is_dirty());
+        (app, handed)
+    }
+
+    /// What an export must leave as it was: the very same workbook, its saved state, its history, the messages.
+    fn state(app: &SheetApp) -> (Arc<gridcraft_engine::model::Workbook>, Arc<gridcraft_engine::model::Workbook>, usize, u64, Option<(String, String)>, bool) {
+        let d = app.session.active().unwrap();
+        (d.wb.clone(), d.saved.clone(), d.undo.len(), d.revision, app.message.clone(), app.notice.is_some())
+    }
+
+    fn same(a: &(Arc<gridcraft_engine::model::Workbook>, Arc<gridcraft_engine::model::Workbook>, usize, u64, Option<(String, String)>, bool), b: &SheetApp) -> bool {
+        let n = state(b);
+        Arc::ptr_eq(&a.0, &n.0) && Arc::ptr_eq(&a.1, &n.1) && (a.2, a.3, &a.4, a.5) == (n.2, n.3, &n.4, n.5)
+    }
+
+    fn xlsx() -> Vec<u8> {
+        let mut s = gridcraft_engine::Session::new();
+        s.new_workbook();
+        s.run("cell.set", json!({"cell": "A1", "input": "42"})).unwrap();
+        gridcraft_engine::io::save_bytes(&s.active().unwrap().wb, "Budget.xlsx").unwrap()
+    }
+
+    /// The host's ask for the bytes (`craft:export`) of an .xlsx is the bytes the person's Save then hands over, under the
+    /// opened name, with no loss; and it is never a save: the workbook is the very same, unsaved, and nothing is handed over.
+    #[test]
+    fn an_export_for_the_host_is_the_bytes_of_a_save_and_leaves_the_workbook_unsaved_and_unchanged() {
+        let (mut app, handed) = host_app("Budget.xlsx", &xlsx());
+        assert!(app.host_export("Other.xlsx", false).is_err(), "only the host's own file is exported");
+        let before = state(&app);
+        let export = app.host_export("Budget.xlsx", false).unwrap();
+        assert_eq!(app.host_export("Budget.xlsx", true).unwrap(), export, "keeping the original is the same answer");
+        assert!(same(&before, &app), "an export changes nothing");
+        assert!(app.session.active().unwrap().is_dirty(), "an export is not a save: the work is still unsaved");
+        assert!(handed.borrow().is_empty(), "nothing went to the host's save");
+        assert_eq!((export.name.as_str(), export.losses.len()), ("Budget.xlsx", 0));
+        app.run("file.save", json!({})).unwrap();
+        assert_eq!(handed.borrow().as_slice(), &[("Budget.xlsx".to_string(), export.bytes.clone())], "Save hands over those bytes");
+    }
+
+    /// An .ods or .csv answers in its own format under its own name: the bytes Sheets writes for that format.
+    #[test]
+    fn an_export_of_an_ods_or_csv_is_in_its_own_format() {
+        let ods = {
+            let mut s = gridcraft_engine::Session::new();
+            s.new_workbook();
+            s.run("cell.set", json!({"cell": "A1", "input": "42"})).unwrap();
+            gridcraft_engine::io::save_bytes(&s.active().unwrap().wb, "Budget.ods").unwrap()
+        };
+        for (name, bytes, fmt) in [("Budget.ods", ods, "ods"), ("data.csv", b"a,b\n1,2\n".to_vec(), "csv")] {
+            let (mut app, handed) = host_app(name, &bytes);
+            let before = state(&app);
+            let export = app.host_export(name, false).unwrap();
+            assert!(same(&before, &app), "{name}: an export changes nothing");
+            assert_eq!((export.name.as_str(), export.losses.len()), (name, 0));
+            let r = app.run("file.saveBytes", json!({"format": fmt})).unwrap();
+            let written = r["base64"].as_str().and_then(gridcraft_engine::io::base64_decode).unwrap();
+            assert_eq!(export.bytes, written, "{name}: the bytes Sheets writes in that format");
+            assert!(handed.borrow().is_empty());
+        }
+    }
+
+    /// An imported Excel 97-2003 file has no writer: the export is its .xlsx twin, the name and bytes its Save hands over
+    /// beside it, with the loss said and what the import dropped; an ask to keep the original format is refused.
+    #[test]
+    fn an_export_of_an_imported_xls_is_its_xlsx_twin_with_the_loss_said() {
+        let (mut app, handed) = host_app("Plan.xls", &crate::tests_support::xls_fixture());
+        let before = state(&app);
+        let export = app.host_export("Plan.xls", false).unwrap();
+        assert_eq!(export.name, "Plan.xlsx");
+        assert_eq!(export.losses[0], "Sheets has no writer for .xls, so it cannot keep the file in its older format");
+        let said = app.session.active().unwrap().import_warnings.clone();
+        assert!(!said.is_empty() && export.losses[1..] == said[..], "then what the import said it did not read: {:?}", export.losses);
+        assert!(app.host_export("Plan.xls", true).is_err(), "there is no writer for the original format");
+        assert!(same(&before, &app), "an export changes nothing");
+        assert!(handed.borrow().is_empty());
+        app.run("file.save", json!({})).unwrap();
+        assert_eq!(handed.borrow().as_slice(), &[("Plan.xlsx".to_string(), export.bytes.clone())], "Save hands over the twin's bytes");
+        // Saved, the host's file is still the .xls, and its export is still the twin with its losses.
+        app.run("cell.set", json!({"cell": "D4", "input": "8"})).unwrap();
+        let again = app.host_export("Plan.xls", false).unwrap();
+        assert_eq!((again.name.as_str(), again.losses.len()), ("Plan.xlsx", export.losses.len()));
+    }
+
+    /// The import's warnings are kept on the workbook it opened as: what the host's .xls loses in its twin.
+    #[test]
+    fn an_imported_xls_keeps_what_its_import_said() {
+        let mut s = gridcraft_engine::Session::new();
+        let r = s.run("file.open", json!({"name": "Plan.xls", "base64": gridcraft_engine::io::base64_encode(&crate::tests_support::xls_fixture())})).unwrap();
+        let said: Vec<String> = r["warnings"].as_array().unwrap().iter().filter_map(|w| w.as_str().map(str::to_string)).collect();
+        assert_eq!(s.active().unwrap().import_warnings, said);
     }
 }
