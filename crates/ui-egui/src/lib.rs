@@ -332,6 +332,53 @@ pub struct SheetApp {
     pub remote_cursors: Vec<RemoteCursor>,
 }
 
+/// What a CSV of `wb` would lose (oneos files/044): CSV holds the values of one sheet as text, so every other sheet, every formula
+/// (only its result is written), every cell format beyond the number shown (fonts, fills, borders, alignment), merged cells,
+/// comments, links, charts, pictures, shapes, tables, conditional formats and validations are named. Empty: a single-sheet,
+/// value-only workbook, which a CSV keeps whole.
+pub fn csv_losses(wb: &gridcraft_engine::model::Workbook) -> Vec<String> {
+    let mut losses = Vec::new();
+    if wb.sheets.len() > 1 {
+        losses.push(format!("{} sheets (a CSV holds one)", wb.sheets.len()));
+    }
+    let base = wb.styles.get(gridcraft_engine::model::StyleId::DEFAULT);
+    let (mut formulas, mut formats) = (0usize, 0usize);
+    let mut extras: Vec<&str> = Vec::new();
+    for sh in &wb.sheets {
+        for (_, cell) in sh.cells.iter() {
+            if cell.formula.is_some() {
+                formulas += 1;
+            }
+            let st = wb.styles.get(cell.style);
+            if st.font != base.font || st.fill != base.fill || st.borders != base.borders || st.align != base.align {
+                formats += 1;
+            }
+        }
+        let mut note = |has: bool, what: &'static str| {
+            if has && !extras.contains(&what) {
+                extras.push(what);
+            }
+        };
+        note(!sh.merges.is_empty(), "merged cells");
+        note(!sh.comments.is_empty(), "comments");
+        note(!sh.hyperlinks.is_empty(), "links");
+        note(!sh.charts.is_empty(), "charts");
+        note(!sh.images.is_empty() || !sh.cell_pictures.is_empty(), "pictures");
+        note(!sh.shapes.is_empty(), "shapes");
+        note(!sh.tables.is_empty(), "tables");
+        note(!sh.cond_formats.is_empty(), "conditional formats");
+        note(!sh.validations.is_empty(), "data validations");
+    }
+    if formulas > 0 {
+        losses.push(format!("{formulas} formula{} (a CSV keeps only the result)", if formulas == 1 { "" } else { "s" }));
+    }
+    if formats > 0 {
+        losses.push(format!("the formatting of {formats} cell{}", if formats == 1 { "" } else { "s" }));
+    }
+    losses.extend(extras.into_iter().map(str::to_string));
+    losses
+}
+
 impl SheetApp {
     pub fn new(session: Session, services: Services) -> SheetApp {
         SheetApp {
@@ -1031,6 +1078,17 @@ impl SheetApp {
                 losses.extend(d.import_warnings.iter().cloned());
                 (twin, losses)
             }
+            // oneos files/044: a CSV holds one sheet's values. A workbook holding more goes to its .xlsx beside the original, the
+            // losses named; a single-sheet, value-only one saves as itself. `keep_original`: the person chose CSV, accepting the loss.
+            None if ext == "csv" => {
+                let losses = csv_losses(&d.wb);
+                if losses.is_empty() || keep_original {
+                    (opened.to_string(), losses)
+                } else {
+                    let stem = std::path::Path::new(opened).file_stem().map_or_else(|| "Workbook".into(), |s| s.to_string_lossy().into_owned());
+                    (format!("{stem}.xlsx"), losses)
+                }
+            }
             None => (opened.to_string(), Vec::new()),
         };
         let wb = d.workbook_with_view(&self.view_tops(d));
@@ -1682,6 +1740,21 @@ mod host_export_tests {
             assert_eq!(export.bytes, written, "{name}: the bytes Sheets writes in that format");
             assert!(handed.borrow().is_empty());
         }
+    }
+
+    /// oneos files/044: a CSV holds one sheet's values. A formula is named as lost and the export is the workbook's .xlsx (kept beside
+    /// the original); the person's choice of CSV answers CSV with the same loss named. A value-only CSV saves as itself (above).
+    #[test]
+    fn a_csv_that_would_lose_a_formula_is_exported_as_its_xlsx_with_the_loss_named() {
+        let (mut app, _handed) = host_app("data.csv", b"a,b\n1,2\n");
+        app.run("cell.set", json!({"cell": "C1", "input": "=A2+B2"})).unwrap();
+        let export = app.host_export("data.csv", false).unwrap();
+        assert_eq!(export.name, "data.xlsx", "the lossless file, beside the original");
+        assert_eq!(export.losses, vec!["1 formula (a CSV keeps only the result)".to_string()]);
+        assert_eq!(&export.bytes[..2], b"PK", "an .xlsx package");
+        let older = app.host_export("data.csv", true).unwrap();
+        assert_eq!((older.name.as_str(), &older.losses), ("data.csv", &export.losses), "the person's choice: CSV, the loss named");
+        assert!(!older.bytes.starts_with(b"PK"));
     }
 
     /// An imported Excel 97-2003 file has no writer: the export is its .xlsx twin, the name and bytes its Save hands over
