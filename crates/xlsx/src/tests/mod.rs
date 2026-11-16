@@ -9,7 +9,6 @@ mod chart_ref_offsets;
 mod csv_tests;
 mod encrypted_tests;
 mod fixtures;
-mod held_write;
 mod ink_roundtrip;
 mod literal_category_roundtrip;
 mod locale_numfmt;

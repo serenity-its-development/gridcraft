@@ -234,6 +234,8 @@ pub fn save_bytes(wb: &Workbook, path: &str) -> Result<Vec<u8>> {
 
 /// Encodes a workbook as `kind`, whatever `path`'s extension says.
 pub fn save_bytes_as(wb: &Workbook, path: &str, kind: FileKind) -> Result<Vec<u8>> {
+    let masked = mask_held(wb);
+    let wb = masked.as_ref();
     let sheet = wb.active_sheet;
     match kind {
         // The extension picks the package kind; only the macro-enabled kinds (.xlsm, .xltm) carry
@@ -253,6 +255,32 @@ pub fn save_bytes_as(wb: &Workbook, path: &str, kind: FileKind) -> Result<Vec<u8
         FileKind::Json => serde_json::to_vec_pretty(wb).map_err(|e| EngineError::Other(e.to_string())),
         FileKind::Html => to_html(wb, sheet).map(String::into_bytes),
     }
+}
+
+/// What the workspace holds (a `WKS_` function's answer, and every cell that read it: `Sheet::held`) is
+/// never the file's, in any format: those cells, and any refusal, are saved as `#GETTING_DATA` (formulas
+/// kept, asked again when opened). The ONE place every writer is reached through.
+fn mask_held(wb: &Workbook) -> std::borrow::Cow<'_, Workbook> {
+    use gridcraft_core::{CellError, Value};
+    let needs = |sh: &Sheet| !sh.held.is_empty() || sh.cells.iter().any(|(_, c)| matches!(c.value, Value::Error(CellError::Refused)));
+    if !wb.sheets.iter().any(|s| needs(s)) {
+        return std::borrow::Cow::Borrowed(wb);
+    }
+    let mut out = wb.clone();
+    for i in 0..out.sheets.len() {
+        let Some(sh) = out.sheet_mut(i) else { continue };
+        if !needs(sh) {
+            continue;
+        }
+        let mut at: Vec<_> = sh.held.iter().copied().collect();
+        at.extend(sh.cells.iter().filter(|(_, c)| matches!(c.value, Value::Error(CellError::Refused))).map(|(c, _)| c));
+        for c in at {
+            if let Some(cell) = sh.cells.get_mut(c) {
+                cell.value = Value::Error(CellError::GettingData);
+            }
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 /// [`save_bytes`] for the file at `path`: relative paths to linked workbooks are rewritten for

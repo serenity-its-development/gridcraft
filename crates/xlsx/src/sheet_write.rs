@@ -340,7 +340,7 @@ pub fn write_sheet(wb: &Workbook, si: usize, selected: bool, out: &mut Out) -> (
                 let f = cell?.formula.as_ref()?;
                 (f.array.is_none() && crate::array_formula::needs_array(wb, si, *c, f)).then_some(RangeRef::cell(*c))
             });
-            write_cell(&mut s, *c, cell, sheet.cell_pictures.get(c), ov, ex, array.as_ref(), sheet.held.contains(c), &sid, out);
+            write_cell(&mut s, *c, cell, sheet.cell_pictures.get(c), ov, ex, array.as_ref(), &sid, out);
         }
         s.push_str("</row>");
     }
@@ -672,7 +672,6 @@ fn write_cell(
     ov: Option<&String>,
     extra: Option<&Value>,
     dynamic: Option<&RangeRef>,
-    held: bool,
     sid: &dyn Fn(gridcraft_model::StyleId) -> u32,
     out: &mut Out,
 ) {
@@ -697,10 +696,7 @@ fn write_cell(
         v => v,
     };
     let value = match value {
-        // What the workspace holds (a `WKS_` function's answer, and everything that read it) is
-        // not the file's: it is saved as data still to come, and asked again when opened.
-        _ if held => Value::Error(CellError::GettingData),
-        Value::Error(CellError::Refused) => Value::Error(CellError::GettingData),
+        // Held values and refusals are masked once, before any writer (`engine::io::mask_held`).
         Value::Error(CellError::Circ) => Value::Number(0.0),
         // #SPILL! and #CALC! are not error codes of the file format (Excel refuses a file that
         // caches them); Excel itself caches them as #VALUE!.

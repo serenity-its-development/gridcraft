@@ -54,7 +54,7 @@ impl Question {
                 _ => return Err(CellError::Value),
             };
             let text = match text {
-                Value::Text(t) if !t.trim().is_empty() && t.chars().count() <= MAX_TEXT => t.to_string(),
+                Value::Text(t) if !t.trim().is_empty() && t.chars().count() <= MAX_TEXT => t.trim().to_string(),
                 _ => return Err(CellError::Value),
             };
             let page = match page {

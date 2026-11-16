@@ -166,3 +166,21 @@ fn outside_a_workspace_wks_names_are_unknown() {
     assert_eq!(t.get("A1"), Value::Error(CellError::Name));
     assert!(t.calc.held.take_asks().is_empty());
 }
+
+#[test]
+fn past_the_cap_a_question_is_value_and_the_text_is_trimmed() {
+    let mut t = T::new(&[]);
+    for i in 1..=gridcraft_calc::held::MAX_ENTRIES + 1 {
+        t.set(&format!("A{i}"), &format!("=WKS_QUERY(\"q{i}\")"));
+    }
+    assert_eq!(t.get("A256"), Value::Error(CellError::GettingData));
+    assert_eq!(t.get("A257"), Value::Error(CellError::Value));
+    assert_eq!(t.calc.held.take_asks().len(), gridcraft_calc::held::MAX_ENTRIES);
+    // ' x' and 'x' are one question.
+    let mut t = T::new(&[]);
+    t.set("A1", "=WKS_QUERY(\" x\")");
+    t.set("A2", "=WKS_QUERY(\"x\")");
+    let asks = t.calc.held.take_asks();
+    assert_eq!(asks.len(), 1);
+    assert_eq!(asks[0].1, Question::Select { text: "x".into(), page: 200, after: None });
+}

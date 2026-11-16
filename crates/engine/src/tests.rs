@@ -4820,3 +4820,57 @@ fn a_script_cannot_switch_windows() {
 }
 
 mod seams;
+
+/// What the workspace holds is never saved, in any format (`io::mask_held`, the one place): held cells and
+/// refusals go out as `#GETTING_DATA`, the formulas stay, and a cell that is not held is kept.
+fn held_book() -> gridcraft_model::Workbook {
+    use gridcraft_core::CellError;
+    use gridcraft_model::{Cell, Formula};
+    let at = |s: &str| CellRef::parse(s).unwrap();
+    let f = |t: &str, v: Value| {
+        let mut c = Cell::formula(Formula::new(t));
+        c.value = v;
+        c
+    };
+    let mut wb = gridcraft_model::Workbook::new();
+    let sh = wb.sheet_mut(0).unwrap();
+    sh.cells.set(at("A1"), f("WKS_RATE(\"AUD\")", Value::Number(0.66)));
+    sh.cells.set(at("B1"), f("A1*100", Value::Number(66.0)));
+    sh.cells.set(at("C1"), f("WKS_QUERY(\"hours\")", Value::Error(CellError::Refused)));
+    sh.cells.set(at("D1"), f("1+1", Value::Number(2.0)));
+    sh.held.extend(["A1", "B1"].map(at));
+    wb
+}
+
+#[test]
+fn held_values_are_never_saved_xlsx() {
+    let bytes = crate::io::save_bytes(&held_book(), "b.xlsx").unwrap();
+    let (back, _) = gridcraft_xlsx::read_xlsx(&bytes).unwrap();
+    let sh = back.sheet(0).unwrap();
+    for a in ["A1", "B1", "C1"] {
+        let c = sh.cells.get(CellRef::parse(a).unwrap()).unwrap();
+        assert_eq!(c.value.scalar(), Value::Error(gridcraft_core::CellError::GettingData), "{a}");
+        assert!(c.formula.is_some(), "{a} keeps its formula");
+    }
+    assert_eq!(sh.cells.get(CellRef::parse("D1").unwrap()).unwrap().value.scalar(), Value::Number(2.0));
+}
+
+#[test]
+fn held_values_are_never_saved_ods() {
+    let bytes = crate::io::save_bytes(&held_book(), "b.ods").unwrap();
+    let (back, _) = gridcraft_xlsx::read_ods(&bytes).unwrap();
+    let sh = back.sheet(0).unwrap();
+    for a in ["A1", "B1", "C1"] {
+        let c = sh.cells.get(CellRef::parse(a).unwrap()).unwrap();
+        assert_eq!(c.value.scalar(), Value::Error(gridcraft_core::CellError::GettingData), "{a}");
+    }
+    assert_eq!(sh.cells.get(CellRef::parse("D1").unwrap()).unwrap().value.scalar(), Value::Number(2.0));
+}
+
+#[test]
+fn held_values_are_never_saved_csv() {
+    let out = String::from_utf8(crate::io::save_bytes(&held_book(), "b.csv").unwrap()).unwrap();
+    assert!(!out.contains("0.66") && !out.contains("66,"), "{out}");
+    assert_eq!(out.matches("#GETTING_DATA").count(), 3, "{out}");
+    assert!(out.contains(",2"), "{out}");
+}
