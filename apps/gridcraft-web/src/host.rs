@@ -41,6 +41,9 @@ use wasm_bindgen::closure::Closure;
 /// as it would after Save on the desktop.
 const WORKBOOK_EXTS: &[&str] = &["xlsx"];
 
+/// Most `craft:data:answer`s kept between two frames (more are dropped; the questions stay at #GETTING_DATA).
+const MAX_ANSWERS: usize = 1024;
+
 /// What the host's last `craft:open` said.
 #[derive(Clone, Default)]
 pub struct Opened {
@@ -49,6 +52,8 @@ pub struct Opened {
     pub version_id: String,
     pub read_only: bool,
     pub collab: bool,
+    /// The `WKS_` functions the workspace answers besides `WKS_QUERY` (`craft:open`'s `wks`; [`crate::data`]).
+    pub wks: Vec<String>,
 }
 
 /// What the host said that the shell acts on, in order.
@@ -72,6 +77,8 @@ struct Shared {
     /// The host's asks for the workbook's bytes (`craft:export`): the request id, and whether the file's own format was
     /// asked for (`keep: "original"`). Judged when heard, answered on the next frame.
     exports: Vec<(u64, bool)>,
+    /// `craft:data:answer`s heard on this open, in order ([`crate::data::answer_of`] reads them on the next frame).
+    answers: Vec<serde_json::Value>,
 }
 
 #[derive(Clone)]
@@ -194,6 +201,23 @@ impl Bridge {
         let _ = self.parent.post_message(&parsed, &self.origin);
     }
 
+    /// `craft:data:ask {session, id, question}`: a `WKS_` function's question to the workspace ([`crate::data`]).
+    pub fn post_data_ask(&self, id: &str, q: &gridcraft_engine::calc::Question) {
+        let session = self.shared.borrow().opened.session.clone();
+        if session.is_empty() {
+            return;
+        }
+        let Ok(json) = serde_json::to_string(&crate::data::ask_message(&session, id, q)) else { return };
+        if let Ok(parsed) = js_sys::JSON::parse(&json) {
+            let _ = self.parent.post_message(&parsed, &self.origin);
+        }
+    }
+
+    /// The session's `craft:data:answer`s heard since the last frame.
+    pub fn take_answers(&self) -> Vec<serde_json::Value> {
+        std::mem::take(&mut self.shared.borrow_mut().answers)
+    }
+
     /// `craft:result {session, id, ok, result|error}` to the host, on the session it was asked in.
     pub fn post_result(&self, id: f64, outcome: Result<serde_json::Value, String>) {
         let session = self.shared.borrow().opened.session.clone();
@@ -304,6 +328,7 @@ impl Bridge {
                         version_id: string(&data, "versionId").unwrap_or_default(),
                         read_only: boolean(&data, "readOnly"),
                         collab: boolean(&data, "collab"),
+                        wks: json_at(&data, "wks").map(|open| crate::data::names_of(&open)).unwrap_or_default(),
                     };
                     {
                         let mut s = bridge.shared.borrow_mut();
@@ -311,6 +336,7 @@ impl Bridge {
                         s.events.push_back(Event::Opened(opened));
                         // An ask not yet answered was for the open this one replaces.
                         s.exports.clear();
+                        s.answers.clear();
                     }
                     inbox.lock().unwrap_or_else(|e| e.into_inner()).push((name, bytes));
                     crate::handoff::wasm::note_open();
@@ -320,6 +346,15 @@ impl Bridge {
                 "craft:saved" if string(&data, "session").as_deref() == Some(known.as_str()) => {
                     if let Some(version) = string(&data, "versionId") {
                         bridge.shared.borrow_mut().opened.version_id = version;
+                    }
+                }
+                // The workspace's answer to a `WKS_` question: read against the question on the next frame.
+                "craft:data:answer" if !known.is_empty() && string(&data, "session").as_deref() == Some(known.as_str()) => {
+                    if let Some(answer) = json(&data) {
+                        let mut s = bridge.shared.borrow_mut();
+                        if s.answers.len() < MAX_ANSWERS {
+                            s.answers.push(answer);
+                        }
                     }
                 }
                 "craft:refused" if string(&data, "session").as_deref() == Some(known.as_str()) => {
@@ -433,6 +468,18 @@ fn message(fields: &[(&str, JsValue)]) -> Option<js_sys::Object> {
 
 fn string(data: &JsValue, key: &str) -> Option<String> {
     js_sys::Reflect::get(data, &JsValue::from_str(key)).ok()?.as_string()
+}
+
+/// The whole message as JSON (for messages that carry no bytes).
+fn json(data: &JsValue) -> Option<serde_json::Value> {
+    serde_json::from_str(&js_sys::JSON::stringify(data).ok()?.as_string()?).ok()
+}
+
+/// `{key: data[key]}` as JSON (a `craft:open` carries bytes, which are not read this way).
+fn json_at(data: &JsValue, key: &str) -> Option<serde_json::Value> {
+    let v = js_sys::Reflect::get(data, &JsValue::from_str(key)).ok().filter(|v| !v.is_undefined())?;
+    let v: serde_json::Value = serde_json::from_str(&js_sys::JSON::stringify(&v).ok()?.as_string()?).ok()?;
+    Some(serde_json::json!({ key: v }))
 }
 
 fn boolean(data: &JsValue, key: &str) -> bool {

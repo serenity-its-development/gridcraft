@@ -23,6 +23,8 @@ mod export;
 
 #[cfg(target_arch = "wasm32")]
 mod collab;
+#[cfg(any(target_arch = "wasm32", test))]
+mod data;
 #[cfg(target_arch = "wasm32")]
 mod host;
 #[cfg(any(target_arch = "wasm32", test))]

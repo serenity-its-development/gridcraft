@@ -62,6 +62,11 @@ pub struct Sheet {
     /// Anchor → spill range.
     #[serde(skip)]
     pub spill_ranges: BTreeMap<CellRef, RangeRef>,
+    /// Cells that read a value held by the workspace (a `WKS_` function), directly or through
+    /// other formulas, spilled cells included. Kept by the calc engine; a file never stores their
+    /// values (the xlsx writer writes `#GETTING_DATA`).
+    #[serde(skip)]
+    pub held: std::collections::BTreeSet<CellRef>,
     pub cols: BTreeMap<u32, LineInfo>,
     pub rows: BTreeMap<u32, LineInfo>,
     /// Default column width and row height in pixels at 96 dpi (a file stores row heights in points).
@@ -146,6 +151,7 @@ impl Sheet {
             cell_pictures: BTreeMap::new(),
             spill: BTreeMap::new(),
             spill_ranges: BTreeMap::new(),
+            held: std::collections::BTreeSet::new(),
             cols: BTreeMap::new(),
             rows: BTreeMap::new(),
             default_col_width: DEFAULT_COL_WIDTH,

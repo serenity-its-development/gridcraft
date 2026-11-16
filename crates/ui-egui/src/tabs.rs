@@ -353,6 +353,11 @@ pub fn status_bar(app: &mut SheetApp, ui: &mut Ui) {
                         };
                         text(ui, egui::RichText::new(label).font(theme::ui_font(12.5)).color(t.danger));
                     }
+                    // A `WKS_` question the workspace refused: its reason, for the selected cell.
+                    if let Some(reason) = d.calc.held_reason(d.wb.active_sheet, d.selection.active) {
+                        ui.add_space(12.0);
+                        text(ui, egui::RichText::new(format!("#REFUSED: {reason}")).font(theme::ui_font(12.5)).color(t.danger));
+                    }
                     if app.session.clipboard.is_some() && app.editor.is_none() {
                         ui.add_space(12.0);
                         text(

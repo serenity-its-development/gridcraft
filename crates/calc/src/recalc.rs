@@ -45,6 +45,7 @@ use gridcraft_formula::Expr;
 use gridcraft_model::{CalcMode, Workbook};
 
 use crate::eval::{Area, Evaluator, Host, precedents, stack_position};
+use crate::held::HeldStore;
 
 pub type Key = (usize, CellRef);
 
@@ -52,6 +53,8 @@ pub type Key = (usize, CellRef);
 struct Node {
     areas: Vec<Area>,
     dynamic: bool,
+    /// The formula calls a `WKS_` function: what it gives is held by the workspace.
+    held: bool,
 }
 
 /// Ranges wider than this many columns go to the per-sheet wide index instead of per-column ones.
@@ -202,6 +205,8 @@ pub struct Graph {
     /// sheet → row intervals of wider ranges, with their columns: (first, last, dependent)
     wide_deps: HashMap<usize, Intervals<(u32, u32, Key)>>,
     dynamic: HashSet<Key>,
+    /// Formulas that call a `WKS_` function.
+    held: HashSet<Key>,
     /// Range indexes changed since the last [`Graph::settle`].
     unsettled_cols: HashSet<(usize, u32)>,
     unsettled_wide: HashSet<usize>,
@@ -256,6 +261,9 @@ impl Graph {
         if node.dynamic {
             self.dynamic.insert(k);
         }
+        if node.held {
+            self.held.insert(k);
+        }
         self.nodes.insert(k, node);
     }
 
@@ -283,6 +291,7 @@ impl Graph {
             }
         }
         self.dynamic.remove(&k);
+        self.held.remove(&k);
     }
 
     /// Tidies the range indexes changed by `insert`/`remove` (queries stay correct without it,
@@ -377,11 +386,20 @@ pub struct Calc {
     /// Cells whose formulas have errors from cycles.
     pub circular: Vec<Key>,
     pub last_recalc_cells: usize,
+    /// The workspace's questions and answers (`WKS_` functions).
+    pub held: HeldStore,
 }
 
 impl Default for Calc {
     fn default() -> Self {
-        Calc { graph: Graph::default(), rng: 0x9E37_79B9_7F4A_7C15, fixed_now: None, circular: vec![], last_recalc_cells: 0 }
+        Calc {
+            graph: Graph::default(),
+            rng: 0x9E37_79B9_7F4A_7C15,
+            fixed_now: None,
+            circular: vec![],
+            last_recalc_cells: 0,
+            held: HeldStore::default(),
+        }
     }
 }
 
@@ -436,6 +454,8 @@ struct PassHost<'a> {
     stack_top: usize,
     /// Whether an evaluation ran past the stack budget since the innermost formula started.
     out_of_stack: bool,
+    /// The workspace's questions (`WKS_` functions); `None`: they are unknown names.
+    held: Option<&'a mut HeldStore>,
 }
 
 impl<'a> PassHost<'a> {
@@ -468,6 +488,7 @@ impl<'a> PassHost<'a> {
             taint: false,
             stack_top: 0,
             out_of_stack: false,
+            held: None,
         }
     }
 }
@@ -768,6 +789,15 @@ impl Host for PassHost<'_> {
     fn workbook(&self) -> &Workbook {
         self.wb
     }
+    fn wks_known(&self, name: &str) -> bool {
+        self.held.as_ref().is_some_and(|h| h.knows(name))
+    }
+    fn held(&mut self, sheet: usize, at: CellRef, q: crate::held::Question) -> Value {
+        match self.held.as_mut() {
+            Some(h) => h.ask((sheet, at), q),
+            None => Value::Error(CellError::Name),
+        }
+    }
     fn stack_top(&self) -> Option<usize> {
         (self.depth > 1).then_some(self.stack_top)
     }
@@ -949,7 +979,7 @@ impl Calc {
                     && let Some(e) = f.expr()
                 {
                     let (areas, dynamic) = precedents(wb, si, &e);
-                    self.graph.insert((si, c), Node { areas, dynamic });
+                    self.graph.insert((si, c), Node { areas, dynamic, held: crate::held::asks_held(&e) });
                     if cell.value == Value::Error(CellError::Circ) {
                         circ.push((si, c));
                     }
@@ -1077,10 +1107,11 @@ impl Calc {
             match formula.and_then(|f| f.expr()) {
                 Some(e) => {
                     let (areas, dynamic) = precedents(wb, k.0, &e);
-                    self.graph.insert(k, Node { areas, dynamic });
+                    self.graph.insert(k, Node { areas, dynamic, held: crate::held::asks_held(&e) });
                 }
                 None => {
                     self.graph.remove(k);
+                    self.held.forget_cell(k);
                     // A formula replaced by a constant (or cleared) takes its spilled values with it.
                     if let Some(sh) = wb.sheet_mut(k.0)
                         && let Some(r) = sh.spill_ranges.remove(&k.1)
@@ -1157,6 +1188,68 @@ impl Calc {
         }
     }
 
+    /// The workspace answered question `id` (or refused it): the cells that asked it and what
+    /// reads them are recalculated. Returns whether any cell asked it.
+    pub fn held_answered(&mut self, wb: &mut Workbook, id: &str, answer: crate::held::Answer) -> bool {
+        let readers = self.held.answer(id, answer);
+        if readers.is_empty() {
+            return false;
+        }
+        let dirty = self.dirty_closure(wb, &readers);
+        self.run(wb, dirty, false);
+        true
+    }
+
+    /// Why the workspace refused what the cell asked, if it did.
+    pub fn held_reason(&self, sheet: usize, c: CellRef) -> Option<&str> {
+        self.held.reason_at((sheet, c))
+    }
+
+    /// Marks `Sheet::held`: the formulas that call a `WKS_` function, the cells they spill over,
+    /// and everything that reads them, through other formulas too. A formula with references
+    /// known only while it is evaluated (INDIRECT, OFFSET, names) may read them, so while any
+    /// formula calls one those count as reading it.
+    fn mark_held(&self, wb: &mut Workbook) {
+        if self.graph.held.is_empty() {
+            for si in 0..wb.sheets.len() {
+                if wb.sheet(si).is_some_and(|s| !s.held.is_empty())
+                    && let Some(sh) = wb.sheet_mut(si)
+                {
+                    sh.held.clear();
+                }
+            }
+            return;
+        }
+        let mut seen: HashSet<Key> = HashSet::default();
+        let mut queue: VecDeque<Key> = self.graph.held.iter().chain(self.graph.dynamic.iter()).copied().collect();
+        let mut cells: HashMap<usize, std::collections::BTreeSet<CellRef>> = HashMap::default();
+        let mut deps = Vec::new();
+        while let Some(k) = queue.pop_front() {
+            if !seen.insert(k) {
+                continue;
+            }
+            let held = cells.entry(k.0).or_default();
+            held.insert(k.1);
+            deps.clear();
+            match wb.sheet(k.0).and_then(|s| s.spill_ranges.get(&k.1)) {
+                Some(r) => {
+                    held.extend(r.iter());
+                    self.graph.dependents_of_range(k.0, *r, &mut deps);
+                }
+                None => self.graph.dependents(k.0, k.1, &mut deps),
+            }
+            queue.extend(deps.drain(..).filter(|d| !seen.contains(d)));
+        }
+        for si in 0..wb.sheets.len() {
+            let held = cells.remove(&si).unwrap_or_default();
+            if wb.sheet(si).is_some_and(|s| s.held != held)
+                && let Some(sh) = wb.sheet_mut(si)
+            {
+                sh.held = held;
+            }
+        }
+    }
+
     fn dirty_closure(&self, _wb: &Workbook, seeds: &[Key]) -> Vec<Key> {
         let mut seen: HashSet<Key> = HashSet::default();
         let mut queue: VecDeque<Key> = VecDeque::new();
@@ -1194,6 +1287,7 @@ impl Calc {
     fn run(&mut self, wb: &mut Workbook, mut dirty: Vec<Key>, full: bool) {
         let mut dynamic_again = !self.graph.dynamic.is_empty();
         self.last_recalc_cells = 0;
+        let mut calculated: Vec<Key> = Vec::new();
         for _round in 0..8 {
             if dirty.is_empty() {
                 break;
@@ -1211,6 +1305,7 @@ impl Calc {
             let tp = prof_now();
             let (results, spills, cycles) = {
                 let mut host = PassHost::new(wb, &exprs, &mut rng, now);
+                host.held = Some(&mut self.held);
                 host.iterate = wb.calc.iterative;
                 for k in &dirty {
                     host.calculate(*k);
@@ -1229,6 +1324,7 @@ impl Calc {
             }
             let tw = prof_now();
             self.last_recalc_cells += results.len();
+            calculated.extend(results.keys().copied());
             // The loops this round finds replace the ones listed for the formulas it evaluated.
             if !self.circular.is_empty() {
                 let evaluated: HashSet<Key> = dirty.iter().copied().collect();
@@ -1347,6 +1443,8 @@ impl Calc {
             }
             dirty = self.dirty_closure(wb, &spill_changes);
         }
+        self.held.settle(calculated);
+        self.mark_held(wb);
         // Loops among formulas the run did not evaluate stay listed while they are still formulas.
         // Iterative calculation reports none.
         if wb.calc.iterative {

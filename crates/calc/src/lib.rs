@@ -4,10 +4,12 @@
 #![forbid(unsafe_code)]
 
 pub mod eval;
+pub mod held;
 pub mod recalc;
 mod trimrange;
 
 pub use eval::{Area, SPECIAL_FUNCTIONS, is_known_function};
+pub use held::{Answer, HeldStore, Question};
 pub use recalc::{Calc, Key, evaluate, now_serial};
 
 #[cfg(test)]

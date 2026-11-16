@@ -21,6 +21,9 @@ pub enum CellError {
     Calc,
     /// Circular reference that could not be resolved (shown as 0 by Excel; we keep it explicit).
     Circ,
+    /// A `WKS_` function whose question the host refused (no access, an unknown kind, a bad question): the reason is shown
+    /// beside the cell. Not an error of the file format: the xlsx writer never saves it (it writes `#GETTING_DATA`).
+    Refused,
 }
 
 impl CellError {
@@ -49,6 +52,7 @@ impl CellError {
             CellError::Spill => "#SPILL!",
             CellError::Calc => "#CALC!",
             CellError::Circ => "#CIRC!",
+            CellError::Refused => "#REFUSED",
         }
     }
     /// `ERROR.TYPE` number.
@@ -65,11 +69,12 @@ impl CellError {
             CellError::Spill => 9,
             CellError::Calc => 14,
             CellError::Circ => 15,
+            CellError::Refused => 16,
         }
     }
     pub fn parse(s: &str) -> Option<CellError> {
         let u = s.to_ascii_uppercase();
-        CellError::ALL.iter().chain([CellError::Circ].iter()).find(|e| e.as_str() == u).copied()
+        CellError::ALL.iter().chain([CellError::Circ, CellError::Refused].iter()).find(|e| e.as_str() == u).copied()
     }
 }
 

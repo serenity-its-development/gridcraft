@@ -306,6 +306,34 @@ impl DocState {
     pub fn is_dirty(&self) -> bool {
         !Arc::ptr_eq(&self.wb, &self.saved)
     }
+    /// A change the workspace made (not this person's): no undo step, the grid redraws, and a
+    /// workbook that was clean stays clean.
+    fn quietly<R>(&mut self, f: impl FnOnce(&mut Calc, &mut Workbook) -> R) -> R {
+        let was_clean = !self.is_dirty();
+        let r = f(&mut self.calc, Arc::make_mut(&mut self.wb));
+        self.revision += 1;
+        if was_clean {
+            self.saved = self.wb.clone();
+        }
+        r
+    }
+    /// The workspace opened this document and answers these `WKS_` functions (none outside
+    /// one): earlier questions are dropped and every formula is calculated again.
+    pub fn held_open(&mut self, names: &[String]) {
+        self.quietly(|calc, wb| {
+            calc.held.clear();
+            calc.held.set_names(names);
+            calc.recalc_all(wb);
+        });
+    }
+    /// The workspace answered (or refused) question `id`: the cells that asked it and what reads
+    /// them are calculated again. Returns whether any cell asked it.
+    pub fn held_answered(&mut self, id: &str, answer: gridcraft_calc::Answer) -> bool {
+        if !self.calc.held.is_known(id) {
+            return false;
+        }
+        self.quietly(|calc, wb| calc.held_answered(wb, id, answer))
+    }
     pub fn sheet_index(&self) -> usize {
         self.wb.active_sheet
     }
@@ -531,6 +559,9 @@ impl Session {
     }
     pub fn documents(&self) -> &[DocState] {
         &self.docs
+    }
+    pub fn documents_mut(&mut self) -> &mut [DocState] {
+        &mut self.docs
     }
     pub fn active_index(&self) -> usize {
         self.active

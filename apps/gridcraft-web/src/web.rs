@@ -85,7 +85,7 @@ pub fn start() {
                     }
                     let handoff = app_bridge.clone().map(|bridge| (bridge, crate::handoff::Handoff::new()));
                     let collab = app_bridge.clone().map(crate::collab::Collab::new);
-                    Ok(Box::new(WebShell { app, inbox, bridge: app_bridge, prefs, collab, handoff }))
+                    Ok(Box::new(WebShell { app, inbox, bridge: app_bridge, prefs, collab, handoff, wks: Default::default() }))
                 }),
             )
             .await;
@@ -114,6 +114,49 @@ struct WebShell {
     collab: Option<crate::collab::Collab>,
     /// The progressive open's hand-over to the host (`craft:opened`, the first view's place, `craft:viewed`), when framed by it.
     handoff: Option<(crate::host::Bridge, crate::handoff::Handoff<Option<u64>>)>,
+    /// The session the workspace's `WKS_` names were last given for, and the documents given them.
+    wks: (String, std::collections::BTreeSet<u64>),
+}
+
+impl WebShell {
+    /// The workspace's data (`crate::data`): every document open under the host's session answers its `WKS_` names
+    /// (once a session), the answers heard reach the documents that asked, and new questions go to the host.
+    fn workspace_data(&mut self) -> bool {
+        let Some(bridge) = &self.bridge else { return false };
+        let opened = bridge.opened();
+        if opened.session.is_empty() {
+            return false;
+        }
+        if self.wks.0 != opened.session {
+            self.wks = (opened.session.clone(), Default::default());
+        }
+        let mut changed = false;
+        let docs = self.app.session.documents_mut();
+        for d in docs.iter_mut() {
+            if self.wks.1.insert(d.uid) {
+                d.held_open(&opened.wks);
+                changed = true;
+            }
+        }
+        for msg in bridge.take_answers() {
+            let held = &*docs;
+            let question = |wire: &str| {
+                let (uid, id) = crate::data::split_id(wire)?;
+                held.iter().find(|d| d.uid == uid)?.calc.held.question(id).cloned()
+            };
+            let Some((wire, answer)) = crate::data::answer_of(&msg, &opened.session, question) else { continue };
+            let Some((uid, id)) = crate::data::split_id(&wire) else { continue };
+            if let Some(d) = docs.iter_mut().find(|d| d.uid == uid) {
+                changed |= d.held_answered(id, answer);
+            }
+        }
+        for d in docs.iter_mut() {
+            for (id, q) in d.calc.held.take_asks() {
+                bridge.post_data_ask(&crate::data::wire_id(d.uid, &id), &q);
+            }
+        }
+        changed
+    }
 }
 
 fn local_storage() -> Option<web_sys::Storage> {
@@ -151,6 +194,9 @@ impl eframe::App for WebShell {
         self.app.logic(ctx);
         if let Some(collab) = self.collab.as_mut() {
             collab.post(&mut self.app);
+        }
+        if self.workspace_data() {
+            ctx.request_repaint();
         }
         if let Some((bridge, handoff)) = self.handoff.as_mut() {
             let app = &mut self.app;

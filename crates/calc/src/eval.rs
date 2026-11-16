@@ -110,6 +110,16 @@ pub trait Host {
     }
     /// Called when a formula's evaluation runs past the stack budget.
     fn stack_exhausted(&mut self) {}
+    /// Whether `name` (upper case) is a `WKS_` function this host answers (none by default:
+    /// outside a workspace they are unknown names).
+    fn wks_known(&self, _name: &str) -> bool {
+        false
+    }
+    /// The value of a `WKS_` question asked by the formula at `at`: `#GETTING_DATA` until the
+    /// workspace answers, `#REFUSED` when it refuses.
+    fn held(&mut self, _sheet: usize, _at: CellRef, _q: crate::held::Question) -> Value {
+        Value::Error(CellError::Name)
+    }
 }
 
 pub struct Evaluator<'h> {
@@ -885,7 +895,25 @@ impl<'h> Evaluator<'h> {
         }
     }
 
+    /// A `WKS_` function: its arguments' values make the question the workspace answers.
+    fn wks(&mut self, name: &str, args: &[Expr]) -> Ev {
+        if args.len() > crate::held::MAX_ARGS {
+            return err(CellError::Value);
+        }
+        let values: Vec<Value> = args.iter().map(|a| self.value(a)).collect();
+        match crate::held::Question::of(name, &values) {
+            Ok(q) => Ev::V(self.host.held(self.sheet, self.at, q)),
+            Err(e) => err(e),
+        }
+    }
+
     fn builtin(&mut self, name: &str, args: &[Expr]) -> Ev {
+        if crate::held::is_wks(name) {
+            let upper = name.to_ascii_uppercase();
+            if self.host.wks_known(&upper) {
+                return self.wks(&upper, args);
+            }
+        }
         let Some(spec) = gridcraft_functions::lookup(name) else {
             // A defined name holding a LAMBDA, or a LET-bound lambda.
             return match self.name(name) {
