@@ -2,7 +2,7 @@
 //! over an in-sheet range or array, returning a spilled array that composes with every other
 //! function (FILTER, SUM, SORT, INDEX, a second QUERY…).
 //!
-//! Columns are named by letter (`A`, `B`…, relative to the range's first column) when `data`
+//! Columns are named by letter (`A`, `B`…, absolute: the sheet's own letters, from the range's origin) when `data`
 //! came from a reference, and `Col1`, `Col2`… when it is an array literal or a function's result,
 //! as in Sheets. Each column takes its majority type (number, string or boolean); cells of
 //! another type are null. Clauses: SELECT, WHERE, GROUP BY, PIVOT, ORDER BY, LIMIT, OFFSET,
