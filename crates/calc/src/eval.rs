@@ -700,10 +700,10 @@ impl<'h> Evaluator<'h> {
                     // An array of indexes picks element by element: `CHOOSE({1,2},A1:A3,B1:B3)`
                     // is a two-column array. The library CHOOSE lifts over its arguments.
                     let Some(spec) = gridcraft_functions::lookup(name) else { return err(CellError::Name) };
-                    let mut evaluated = vec![Arg { value: index, from_ref: false }];
+                    let mut evaluated = vec![Arg { value: index, from_ref: false, origin: None }];
                     for a in &args[1..] {
                         let value = self.value(a);
-                        evaluated.push(Arg { value, from_ref: false });
+                        evaluated.push(Arg { value, from_ref: false, origin: None });
                     }
                     let mut ctx = FnCtx { ev: self, criteria: None, lambda: None };
                     return gridcraft_functions::call(spec, &evaluated, &mut ctx).pipe(Ev::V);
@@ -938,6 +938,10 @@ impl<'h> Evaluator<'h> {
                 }
             }
             let from_ref = matches!(ev, Ev::R(_));
+            let origin = match &ev {
+                Ev::R(areas) if areas.len() == 1 => areas.first().map(|a| a.range.start),
+                _ => None,
+            };
             let value = match ev {
                 Ev::R(areas) if areas.len() > 1 => {
                     // Multi-area references (unions): flatten into one row for aggregates.
@@ -952,7 +956,7 @@ impl<'h> Evaluator<'h> {
                 }
                 ev => self.deref(ev),
             };
-            evaluated.push(Arg { value, from_ref });
+            evaluated.push(Arg { value, from_ref, origin });
         }
         let mut ctx = FnCtx { ev: self, criteria, lambda };
         gridcraft_functions::call(spec, &evaluated, &mut ctx).pipe(Ev::V)
@@ -1006,7 +1010,7 @@ impl<'h> Evaluator<'h> {
         let (Some(sum), Some(count)) = (gridcraft_functions::lookup("SUM"), gridcraft_functions::lookup("COUNT")) else {
             return Err(err(CellError::Name));
         };
-        let args = [Arg { value, from_ref }];
+        let args = [Arg { value, from_ref, origin: None }];
         if kind != Agg::Count {
             match gridcraft_functions::call(sum, &args, &mut FnCtx { ev: self, criteria: None, lambda: None }) {
                 Value::Number(n) => acc.sum += n,
@@ -1427,7 +1431,10 @@ impl<'h> Evaluator<'h> {
             let horizontal = l.range.height() == 1 && l.range.width() > 1;
             let same_len = if vertical { r.range.height() == l.range.height() } else { r.range.width() == l.range.width() };
             if !matches!(key, Value::Array(_)) && (vertical || horizontal) && same_len {
-                let mut xargs = vec![Arg { value: key, from_ref: false }, Arg { value: self.area_value(&l), from_ref: true }];
+                let mut xargs = vec![
+                    Arg { value: key, from_ref: false, origin: None },
+                    Arg { value: self.area_value(&l), from_ref: true, origin: Some(l.range.start) },
+                ];
                 // An empty match_mode before a given search_mode is the default (0), not the end.
                 let given = |i: usize| args.get(i).is_some_and(|e| !matches!(e, Expr::Missing));
                 let last = if given(5) {
@@ -1439,10 +1446,10 @@ impl<'h> Evaluator<'h> {
                 };
                 for i in 4..=last {
                     match args.get(i) {
-                        Some(Expr::Missing) | None => xargs.push(Arg { value: Value::Number(0.0), from_ref: false }),
+                        Some(Expr::Missing) | None => xargs.push(Arg { value: Value::Number(0.0), from_ref: false, origin: None }),
                         Some(e) => {
                             let value = self.value(e);
-                            xargs.push(Arg { value, from_ref: false });
+                            xargs.push(Arg { value, from_ref: false, origin: None });
                         }
                     }
                 }
