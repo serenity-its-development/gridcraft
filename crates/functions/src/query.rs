@@ -1092,7 +1092,9 @@ fn query(args: &[Arg], c: &mut dyn Ctx) -> R<Value> {
     let labels = (0..a.cols)
         .map(|col| (0..h).filter_map(|r| a.get(r, col)).map(Value::display).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" "))
         .collect();
-    let ids = (0..a.cols).map(|i| if data.from_ref { col_to_letters(i as u32) } else { format!("Col{}", i + 1) }).collect();
+    // A range's columns are the sheet's own letters, from where the range starts.
+    let first = data.origin.map_or(0, |o| o.col);
+    let ids = (0..a.cols).map(|i| if data.from_ref { col_to_letters(first + i as u32) } else { format!("Col{}", i + 1) }).collect();
     let rows: Vec<Vec<Q>> =
         (h..a.rows).map(|r| types.iter().enumerate().map(|(col, t)| a.get(r, col).map_or(Q::Null, |v| cell_q(v, *t))).collect()).collect();
     let cols = Cols { ids, labels, types };

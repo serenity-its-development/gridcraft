@@ -83,21 +83,24 @@ pub use ets::Timeline;
 pub use stat::{aggregate_values, aggregate_values_k};
 
 /// An evaluated argument. Ranges arrive as `Value::Array` (blank cells = `Value::Empty`) with
-/// `from_ref = true`.
+/// `from_ref = true`; a single-area reference also carries its top-left cell as `origin`.
 #[derive(Clone, Debug)]
 pub struct Arg {
     pub value: Value,
     pub from_ref: bool,
+    /// The top-left cell of the range the value was read from (one area only), for functions
+    /// that address the sheet's own columns (QUERY's `A`, `B`, ...).
+    pub origin: Option<gridcraft_core::CellRef>,
 }
 
 impl Arg {
     /// A literal (non-reference) argument.
     pub fn val(value: impl Into<Value>) -> Arg {
-        Arg { value: value.into(), from_ref: false }
+        Arg { value: value.into(), from_ref: false, origin: None }
     }
     /// An argument that came from a cell or range reference.
     pub fn reference(value: impl Into<Value>) -> Arg {
-        Arg { value: value.into(), from_ref: true }
+        Arg { value: value.into(), from_ref: true, origin: None }
     }
 }
 

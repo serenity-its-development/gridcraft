@@ -63,6 +63,21 @@ fn query_composes_with_other_functions() {
 }
 
 #[test]
+fn a_range_off_column_a_answers_to_its_own_letters() {
+    let mut t = T::new();
+    for (row, [d, e]) in [["k", "v"], ["1", "10"], ["2", "20"], ["3", "30"]].iter().enumerate() {
+        t.set(&format!("D{}", row + 1), d);
+        t.set(&format!("E{}", row + 1), e);
+        t.set(&format!("F{}", row + 1), "x");
+    }
+    t.set("H1", r#"=SUM(QUERY(D1:F4,"select E where D > 1"))"#);
+    assert_eq!(t.num("H1"), 50.0);
+    // Its first column is D, not A.
+    t.set("H2", r#"=QUERY(D1:F4,"select A")"#);
+    assert_eq!(t.get("H2"), Value::Error(gridcraft_core::CellError::Value));
+}
+
+#[test]
 fn query_spills_into_the_grid() {
     let mut t = data();
     t.set("E1", r#"=QUERY(A1:C5,"select A, C order by C desc limit 2")"#);

@@ -53,7 +53,7 @@ fn reject_multi_cell_refs(spec: &FnSpec, args: &[Arg]) -> Option<Vec<Arg>> {
     Some(
         args.iter()
             .enumerate()
-            .map(|(i, a)| if multi(i, a) { Arg { value: Value::Error(CellError::Value), from_ref: false } } else { a.clone() })
+            .map(|(i, a)| if multi(i, a) { Arg { value: Value::Error(CellError::Value), from_ref: false, origin: None } } else { a.clone() })
             .collect(),
     )
 }
