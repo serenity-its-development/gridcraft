@@ -73,6 +73,7 @@ pub(crate) mod info;
 pub(crate) mod lift;
 pub(crate) mod lookup;
 pub(crate) mod math;
+pub(crate) mod query;
 pub(crate) mod special;
 pub(crate) mod stat;
 pub(crate) mod text;
@@ -216,6 +217,7 @@ fn registry() -> &'static (Vec<FnSpec>, HashMap<&'static str, usize>) {
             info::specs(),
             engineering::specs(),
             database::specs(),
+            query::specs(),
         ] {
             v.extend(list);
         }
