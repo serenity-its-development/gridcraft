@@ -262,7 +262,7 @@ pub fn save_bytes_as(wb: &Workbook, path: &str, kind: FileKind) -> Result<Vec<u8
 /// kept, asked again when opened). The ONE place every writer is reached through.
 fn mask_held(wb: &Workbook) -> std::borrow::Cow<'_, Workbook> {
     use gridcraft_core::{CellError, Value};
-    let needs = |sh: &Sheet| !sh.held.is_empty() || sh.cells.iter().any(|(_, c)| matches!(c.value, Value::Error(CellError::Refused)));
+    let needs = |sh: &Sheet| !sh.held.is_empty() || sh.cells.iter().any(|(_, c)| matches!(c.value, Value::Error(CellError::Refused))) || sh.spill.values().any(|v| matches!(v, Value::Error(CellError::Refused)));
     if !wb.sheets.iter().any(|s| needs(s)) {
         return std::borrow::Cow::Borrowed(wb);
     }
@@ -277,6 +277,15 @@ fn mask_held(wb: &Workbook) -> std::borrow::Cow<'_, Workbook> {
         for c in at {
             if let Some(cell) = sh.cells.get_mut(c) {
                 cell.value = Value::Error(CellError::GettingData);
+            }
+            // A spilled answer lives in `Sheet::spill`, not in `cells`: the writers read it from there.
+            if let Some(v) = sh.spill.get_mut(&c) {
+                *v = Value::Error(CellError::GettingData);
+            }
+        }
+        for v in sh.spill.values_mut() {
+            if matches!(v, Value::Error(CellError::Refused)) {
+                *v = Value::Error(CellError::GettingData);
             }
         }
     }
@@ -777,6 +786,39 @@ pub fn image_size(data: &[u8]) -> Option<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A held `WKS_QUERY` answer spilled over A1:B2 is never saved, in any format (its rows live in `Sheet::spill`).
+    #[test]
+    fn held_spill_is_never_saved_in_any_format() {
+        use gridcraft_core::Value;
+        use gridcraft_model::{Cell, Formula};
+        let at = |s: &str| CellRef::parse(s).unwrap();
+        let mut wb = gridcraft_model::Workbook::new();
+        let sh = wb.sheet_mut(0).unwrap();
+        let mut c = Cell::formula(Formula::new("WKS_QUERY(\"salaries\")"));
+        c.value = Value::text("name");
+        sh.cells.set(at("A1"), c);
+        for (a, v) in [("B1", "pay"), ("A2", "SECRETNAME"), ("B2", "SECRETPAY")] {
+            sh.spill.insert(at(a), Value::text(v));
+        }
+        sh.spill_ranges.insert(at("A1"), gridcraft_core::RangeRef::parse("A1:B2").unwrap());
+        sh.held.extend(["A1", "B1", "A2", "B2"].map(at));
+        for name in ["b.xlsx", "b.ods", "b.csv", "b.tsv", "b.json", "b.html"] {
+            let bytes = save_bytes(&wb, name).unwrap();
+            let text = if name.ends_with(".xlsx") || name.ends_with(".ods") {
+                let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+                let mut all = String::new();
+                for i in 0..z.len() {
+                    let mut f = z.by_index(i).unwrap();
+                    let _ = std::io::Read::read_to_string(&mut f, &mut all);
+                }
+                all
+            } else {
+                String::from_utf8_lossy(&bytes).into_owned()
+            };
+            assert!(!text.contains("SECRET"), "held spill leaked in {name}");
+        }
+    }
 
     fn book(rtl: bool, cells: &[(&str, gridcraft_core::Value, gridcraft_model::HAlign)]) -> Workbook {
         let mut wb = Workbook::new();
